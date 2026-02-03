@@ -1,0 +1,12 @@
+
+# Development certificate
+devcert.pfx
+
+# Windows SDK packages and generated files
+.winapp
+
+dist/
+Debug/
+
+*.msix
+*.exe

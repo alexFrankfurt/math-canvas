@@ -1,0 +1,15 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 17
+VisualStudioVersion = 17.0.31903.01
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D04-00A0C91E8508}") = "CppProject", "CppProject.vcxproj", "{E8F1C5B-4D2A-4E8F-9C0A-5F1E2B3C4D5E}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|x64 = Debug|x64
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {E8F1C5B-4D2A-4E8F-9C0A-5F1E2B3C4D5E}.Debug|x64.ActiveCfg = Debug|x64
+        {E8F1C5B-4D2A-4E8F-9C0A-5F1E2B3C4D5E}.Debug|x64.Build.0 = Debug|x64
+    EndGlobalSection
+EndGlobal
