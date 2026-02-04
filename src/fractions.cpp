@@ -211,6 +211,7 @@ namespace
 
         // Set up drawing context with transparent background for better visibility
         SetBkMode(hdc, TRANSPARENT);
+        SetTextAlign(hdc, TA_TOP | TA_LEFT); // Ensure coordinate is top-left
         SetTextColor(hdc, RGB(0, 0, 0)); // Black text for maximum contrast
 
         HFONT oldFont = (HFONT)SelectObject(hdc, renderBaseFont);
@@ -218,29 +219,33 @@ namespace
         GetTextMetricsW(hdc, &tmBase);
 
         const int xCenter = (ptStart.x + ptEnd.x) / 2;
-        const int yBaseline = ptStart.y + tmBase.tmAscent;
-        const int gap = std::max<int>(5, (int)(tmBase.tmHeight / 8));
+        // Shift yMid down even more to lower the entire fraction block
+        // (numerator and denominator) relative to the text line.
+        const int yMid = ptStart.y + (int)(tmBase.tmHeight);
+        
+        // Gap remains the same as user likes it.
+        const int gap = std::max<int>(4, (int)(tmBase.tmHeight / 4));
 
         // Draw numerator above the bar
         if (!f.numerator.empty())
         {
             SelectObject(hdc, numFont);
+            TEXTMETRICW tmNum = {};
+            GetTextMetricsW(hdc, &tmNum);
+
             SIZE numSize = {};
             GetTextExtentPoint32W(hdc, f.numerator.c_str(), (int)f.numerator.size(), &numSize);
 
             int xNum = xCenter - (numSize.cx / 2);
-            int yNum = yBaseline - tmBase.tmAscent - tmBase.tmHeight - gap;
+            // Numerator bottom is 'gap' pixels above the midline.
+            int yNum = yMid - gap - tmNum.tmHeight;
 
-            // Ensure numerator is visible (not above window top)
-            RECT rcClient;
-            GetClientRect(hEdit, &rcClient);
-            if (yNum < 0)
+            // Prevent drawing off-screen at target top
+            if (yNum < 2) 
             {
-                yNum = 5; // Minimum 5 pixels from top
+                yNum = 2;
             }
 
-            // Draw numerator with high contrast
-            SetTextColor(hdc, RGB(0, 0, 0)); // Black for numerator
             TextOutW(hdc, xNum, yNum, f.numerator.c_str(), (int)f.numerator.size());
         }
 
@@ -248,22 +253,24 @@ namespace
         if (!f.denominator.empty())
         {
             SelectObject(hdc, denFont);
+            TEXTMETRICW tmDen = {};
+            GetTextMetricsW(hdc, &tmDen);
+
             SIZE denSize = {};
             GetTextExtentPoint32W(hdc, f.denominator.c_str(), (int)f.denominator.size(), &denSize);
 
             int xDen = xCenter - (denSize.cx / 2);
-            int yDen = yBaseline + gap;
+            // Denominator top is 'gap' pixels below the midline.
+            int yDen = yMid + gap;
 
             // Ensure denominator is visible (not below window bottom)
             RECT rcClient;
             GetClientRect(hEdit, &rcClient);
-            if (yDen + tmBase.tmHeight > rcClient.bottom)
+            if (yDen + tmDen.tmHeight > rcClient.bottom - 2)
             {
-                yDen = rcClient.bottom - tmBase.tmHeight - 5;
+                yDen = rcClient.bottom - tmDen.tmHeight - 2;
             }
 
-            // Draw denominator with high contrast
-            SetTextColor(hdc, RGB(0, 0, 0)); // Black for denominator
             TextOutW(hdc, xDen, yDen, f.denominator.c_str(), (int)f.denominator.size());
         }
 
