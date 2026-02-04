@@ -21,6 +21,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="src\fractions.cpp" />
   </ItemGroup>
   <PropertyGroup Condition=" '$(Configuration)'=='Debug' and '$(Platform)'=='x64'">
     <BaseOutputPath>Debug\</BaseOutputPath>
@@ -28,15 +29,22 @@
     <Optimization>false</Optimization>
     <PreprocessorDefinitions>_DEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     <OutDir>$(BaseOutputPath)</OutDir>
-    <TargetPath>$(OutDir)CppProject.exe</TargetPath>
+    <TargetName>windeskapp</TargetName>
+    <TargetExt>.exe</TargetExt>
     <UseDebugLibraries>true</UseDebugLibraries>
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <PreBuildEvent>
+      <Command>taskkill /F /IM windeskapp.exe &gt;NUL 2&gt;&amp;1 || exit /B 0</Command>
+    </PreBuildEvent>
     <PreLinkEvent>
-      <Command>taskkill /F /IM CppProject.exe &gt;NUL 2&gt;&amp;1 || exit /B 0</Command>
+      <Command>taskkill /F /IM windeskapp.exe &gt;NUL 2&gt;&amp;1 || exit /B 0</Command>
     </PreLinkEvent>
+    <PostBuildEvent>
+      <Command>copy /Y "$(TargetPath)" "$(ProjectDir)windeskapp.exe" &gt;NUL</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
