@@ -187,7 +187,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Create fraction button
     g_hFractionButton = CreateWindow(
         L"BUTTON",
-        L"Insert Fraction",
+        L"Insert &Fraction",
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
         10, 10, 150, 40,
         hwnd,
@@ -199,7 +199,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Create clear button
     g_hClearButton = CreateWindow(
         L"BUTTON",
-        L"Clear Text",
+        L"&Clear Text",
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
         170, 10, 150, 40,
         hwnd,
@@ -243,6 +243,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             SetFocus(g_hRichEdit);
         }
         return 0;
+
+    case WM_SIZE:
+    {
+        const int width = LOWORD(lParam);
+        const int height = HIWORD(lParam);
+
+        const int margin = 10;
+        const int top = 100; // Leave space for buttons and instructions
+
+        if (g_hRichEdit)
+        {
+            int editWidth = width - 2 * margin;
+            int editHeight = height - top - margin;
+
+            if (editWidth < 0) editWidth = 0;
+            if (editHeight < 0) editHeight = 0;
+
+            MoveWindow(
+                g_hRichEdit,
+                margin,
+                top,
+                editWidth,
+                editHeight,
+                TRUE);
+        }
+    }
+    return 0;
 
     case WM_DESTROY:
         PostQuitMessage(0);
