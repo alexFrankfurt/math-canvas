@@ -13,7 +13,8 @@ namespace
 
     struct FractionTypingState
     {
-        bool active = false;      // typing denominator
+        bool active = false;      // typing denominator or numerator
+        bool isNumerator = false; // true if editing numerator, false for denominator
         size_t fractionIndex = 0; // index into fractions
     };
 
@@ -155,7 +156,99 @@ namespace
     }
 
 
-    static void DrawFractionOverBar(HWND hEdit, HDC hdc, const FractionSpan& f)
+    static bool GetHitFractionPart(HWND hEdit, HDC hdc, POINT ptMouse, size_t* outIndex, bool* outIsNumerator)
+    {
+        for (size_t i = 0; i < g_fractions.size(); ++i)
+        {
+            const auto& f = g_fractions[i];
+            
+            POINT ptStart = {}, ptEnd = {};
+            if (!TryGetCharPos(hEdit, f.barStart, ptStart)) continue;
+            if (!TryGetCharPos(hEdit, f.barStart + std::max<LONG>(0, f.barLen - 1), ptEnd)) continue;
+
+            HFONT baseFont = (HFONT)SendMessage(hEdit, WM_GETFONT, 0, 0);
+            if (!baseFont) baseFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+            const double renderScale = ComputeRenderScaleFromBarSpan(hEdit, hdc, f, baseFont);
+            HFONT numFont = CreateScaledFontWithScale(baseFont, renderScale, 70);
+            HFONT denFont = CreateScaledFontWithScale(baseFont, renderScale, 70);
+            HFONT renderBaseFont = CreateScaledFontWithScale(baseFont, renderScale, 100);
+
+            TEXTMETRICW tmBase = {};
+            HFONT old = (HFONT)SelectObject(hdc, renderBaseFont);
+            GetTextMetricsW(hdc, &tmBase);
+
+            // We calculate xCenter by finding the start of the first char and the end 
+            // of the last char in the bar.
+            const int barWidth = (ptEnd.x - ptStart.x) + (int)(tmBase.tmAveCharWidth * renderScale);
+            const int xCenter = ptStart.x + (barWidth / 2);
+
+            // Revert yMid to tmHeight (100% of line height) as requested to avoid 
+            // the fraction numbers intersecting with the bar layout.
+            const int yMid = ptStart.y + (int)(tmBase.tmHeight);
+            const int gap = std::max<int>(4, (int)(tmBase.tmHeight / 4));
+
+            bool hit = false;
+            // Numerator check
+            {
+                SelectObject(hdc, numFont);
+                TEXTMETRICW tmNum = {};
+                GetTextMetricsW(hdc, &tmNum);
+                SIZE numSize = {};
+                GetTextExtentPoint32W(hdc, f.numerator.c_str(), (int)f.numerator.size(), &numSize);
+                
+                // If empty numerator, provide a small hit area
+                int w = std::max<int>(30, numSize.cx);
+                int h = std::max<int>(20, tmNum.tmHeight);
+
+                RECT rcNum = { 
+                    xCenter - (w / 2) - 15, 
+                    yMid - gap - h - 15,
+                    xCenter + (w / 2) + 15,
+                    yMid - gap + 15
+                };
+                if (PtInRect(&rcNum, ptMouse)) {
+                    *outIndex = i;
+                    *outIsNumerator = true;
+                    hit = true;
+                }
+            }
+
+            if (!hit)
+            {
+                // Denominator check
+                SelectObject(hdc, denFont);
+                TEXTMETRICW tmDen = {};
+                GetTextMetricsW(hdc, &tmDen);
+                SIZE denSize = {};
+                GetTextExtentPoint32W(hdc, f.denominator.c_str(), (int)f.denominator.size(), &denSize);
+
+                int w = std::max<int>(30, denSize.cx);
+                int h = std::max<int>(20, tmDen.tmHeight);
+
+                RECT rcDen = {
+                    xCenter - (w / 2) - 15,
+                    yMid + gap - 15,
+                    xCenter + (w / 2) + 15,
+                    yMid + gap + h + 20
+                };
+                if (PtInRect(&rcDen, ptMouse)) {
+                    *outIndex = i;
+                    *outIsNumerator = false;
+                    hit = true;
+                }
+            }
+
+            SelectObject(hdc, old);
+            DeleteObject(renderBaseFont);
+            DeleteObject(numFont);
+            DeleteObject(denFont);
+            if (hit) return true;
+        }
+        return false;
+    }
+
+    static void DrawFractionOverBar(HWND hEdit, HDC hdc, const FractionSpan& f, size_t fIndex)
     {
         if (f.barLen <= 0)
             return;
@@ -178,28 +271,15 @@ namespace
             ptEnd.y = ptStart.y;
         }
 
-        if (kDebugOverlay)
-        {
-            const int savedDbg = SaveDC(hdc);
-            SelectClipRgn(hdc, nullptr);
-            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0));
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            // Draw debug rectangle around the bar area
-            Rectangle(hdc, ptStart.x - 10, ptStart.y - 10, ptEnd.x + 10, ptEnd.y + 10);
-            SelectObject(hdc, oldPen);
-            DeleteObject(pen);
-            RestoreDC(hdc, savedDbg);
-        }
-
         HFONT baseFont = (HFONT)SendMessage(hEdit, WM_GETFONT, 0, 0);
+        bool deleteBaseFont = false;
         if (!baseFont)
         {
-            // Create default font if none found
             baseFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
+            deleteBaseFont = true;
         }
 
-        // Use dynamic scaling based on the actual on-screen width of the bar
         const double renderScale = ComputeRenderScaleFromBarSpan(hEdit, hdc, f, baseFont);
 
         HFONT renderBaseFont = CreateScaledFontWithScale(baseFont, renderScale, 100);
@@ -209,25 +289,26 @@ namespace
         const int saved = SaveDC(hdc);
         SelectClipRgn(hdc, nullptr);
 
-        // Set up drawing context with transparent background for better visibility
         SetBkMode(hdc, TRANSPARENT);
-        SetTextAlign(hdc, TA_TOP | TA_LEFT); // Ensure coordinate is top-left
-        SetTextColor(hdc, RGB(0, 0, 0)); // Black text for maximum contrast
+        SetTextAlign(hdc, TA_TOP | TA_LEFT); 
 
         HFONT oldFont = (HFONT)SelectObject(hdc, renderBaseFont);
         TEXTMETRICW tmBase = {};
         GetTextMetricsW(hdc, &tmBase);
 
-        const int xCenter = (ptStart.x + ptEnd.x) / 2;
-        // Shift yMid down even more to lower the entire fraction block
-        // (numerator and denominator) relative to the text line.
+        const int barWidth = (ptEnd.x - ptStart.x) + (int)(tmBase.tmAveCharWidth);
+        const int xCenter = ptStart.x + (barWidth / 2);
+
+        // Revert yMid to tmHeight (100% of line height) as requested to avoid 
+        // the fraction numbers intersecting with the bar layout.
         const int yMid = ptStart.y + (int)(tmBase.tmHeight);
-        
-        // Gap remains the same as user likes it.
+
         const int gap = std::max<int>(4, (int)(tmBase.tmHeight / 4));
 
-        // Draw numerator above the bar
-        if (!f.numerator.empty())
+        const COLORREF normalColor = RGB(0, 0, 0);
+        const COLORREF activeColor = RGB(0, 102, 204);
+
+        // Draw numerator
         {
             SelectObject(hdc, numFont);
             TEXTMETRICW tmNum = {};
@@ -237,20 +318,22 @@ namespace
             GetTextExtentPoint32W(hdc, f.numerator.c_str(), (int)f.numerator.size(), &numSize);
 
             int xNum = xCenter - (numSize.cx / 2);
-            // Numerator bottom is 'gap' pixels above the midline.
             int yNum = yMid - gap - tmNum.tmHeight;
+            if (yNum < 2) yNum = 2;
 
-            // Prevent drawing off-screen at target top
-            if (yNum < 2) 
-            {
-                yNum = 2;
-            }
+            if (g_state.active && g_state.fractionIndex == fIndex && g_state.isNumerator)
+                SetTextColor(hdc, activeColor);
+            else
+                SetTextColor(hdc, normalColor);
 
-            TextOutW(hdc, xNum, yNum, f.numerator.c_str(), (int)f.numerator.size());
+            // Draw placeholder if empty while editing
+            if (f.numerator.empty() && g_state.active && g_state.fractionIndex == fIndex && g_state.isNumerator)
+                TextOutW(hdc, xCenter - 5, yNum, L"?", 1);
+            else
+                TextOutW(hdc, xNum, yNum, f.numerator.c_str(), (int)f.numerator.size());
         }
 
-        // Draw denominator below the bar
-        if (!f.denominator.empty())
+        // Draw denominator
         {
             SelectObject(hdc, denFont);
             TEXTMETRICW tmDen = {};
@@ -260,18 +343,17 @@ namespace
             GetTextExtentPoint32W(hdc, f.denominator.c_str(), (int)f.denominator.size(), &denSize);
 
             int xDen = xCenter - (denSize.cx / 2);
-            // Denominator top is 'gap' pixels below the midline.
             int yDen = yMid + gap;
 
-            // Ensure denominator is visible (not below window bottom)
-            RECT rcClient;
-            GetClientRect(hEdit, &rcClient);
-            if (yDen + tmDen.tmHeight > rcClient.bottom - 2)
-            {
-                yDen = rcClient.bottom - tmDen.tmHeight - 2;
-            }
+            if (g_state.active && g_state.fractionIndex == fIndex && !g_state.isNumerator)
+                SetTextColor(hdc, activeColor);
+            else
+                SetTextColor(hdc, normalColor);
 
-            TextOutW(hdc, xDen, yDen, f.denominator.c_str(), (int)f.denominator.size());
+            if (f.denominator.empty() && g_state.active && g_state.fractionIndex == fIndex && !g_state.isNumerator)
+                TextOutW(hdc, xCenter - 5, yDen, L"?", 1);
+            else
+                TextOutW(hdc, xDen, yDen, f.denominator.c_str(), (int)f.denominator.size());
         }
 
         SelectObject(hdc, oldFont);
@@ -280,11 +362,14 @@ namespace
         DeleteObject(renderBaseFont);
         DeleteObject(numFont);
         DeleteObject(denFont);
+        if (deleteBaseFont) DeleteObject(baseFont);
 
-        // Update Title Bar with state info
+        // Update title with debug info
         wchar_t buf[256];
-        swprintf_s(buf, L"Fractions: %d | Active: %s | CurNum: %s",
-            (int)g_fractions.size(), g_state.active ? L"YES" : L"NO", g_currentNumber.c_str());
+        swprintf_s(buf, L"Fractions: %d | Editing: %s (%s)",
+            (int)g_fractions.size(), 
+            g_state.active ? L"YES" : L"NO", 
+            g_state.active ? (g_state.isNumerator ? L"Num" : L"Den") : L"None");
         SetWindowTextW(GetParent(hEdit), buf);
     }
 
@@ -292,6 +377,100 @@ namespace
     {
         switch (uMsg)
         {
+        case WM_SETCURSOR:
+        {
+            if (LOWORD(lParam) == HTCLIENT)
+            {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+
+                HDC hdc = GetDC(hwnd);
+                size_t idx = 0;
+                bool isNum = false;
+                bool hit = GetHitFractionPart(hwnd, hdc, pt, &idx, &isNum);
+                
+                // Fallback: Check if over bar characters directly
+                if (!hit)
+                {
+                    POINTL ptl = { pt.x, pt.y };
+                    LRESULT charIdx = SendMessage(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&ptl);
+                    size_t dummy;
+                    if (IsPosInsideAnyFractionBar((LONG)charIdx, &dummy))
+                        hit = true;
+                }
+                
+                ReleaseDC(hwnd, hdc);
+
+                if (hit)
+                {
+                    SetCursor(LoadCursor(nullptr, (LPCWSTR)IDC_HAND));
+                    return TRUE;
+                }
+            }
+            break;
+        }
+
+        case WM_SETFOCUS:
+        {
+            LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
+            if (g_state.active) HideCaret(hwnd);
+            return res;
+        }
+
+        case WM_LBUTTONDOWN:
+        {
+            POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            HDC hdc = GetDC(hwnd);
+            size_t idx = 0;
+            bool isNum = false;
+            bool hit = GetHitFractionPart(hwnd, hdc, pt, &idx, &isNum);
+            ReleaseDC(hwnd, hdc);
+
+            if (hit)
+            {
+                SetFocus(hwnd); // Ensure we have focus to receive characters
+                if (!g_state.active) HideCaret(hwnd);
+                g_state.active = true;
+                g_state.fractionIndex = idx;
+                g_state.isNumerator = isNum;
+                g_currentNumber.clear(); 
+                
+                // Move RichEdit caret to the start of the bar so typing 
+                // feels "anchored" to the fraction location internally.
+                const auto& f = g_fractions[idx];
+                SendMessage(hwnd, EM_SETSEL, (WPARAM)f.barStart, (LPARAM)f.barStart);
+                
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0; 
+            }
+            else
+            {
+                if (g_state.active)
+                {
+                    ShowCaret(hwnd);
+                    g_state.active = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            break; 
+        }
+
+        case WM_LBUTTONUP:
+        {
+            POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            HDC hdc = GetDC(hwnd);
+            size_t idx = 0;
+            bool isNum = false;
+            if (GetHitFractionPart(hwnd, hdc, pt, &idx, &isNum))
+            {
+                ReleaseDC(hwnd, hdc);
+                return 0; // Swallow up message too
+            }
+            ReleaseDC(hwnd, hdc);
+            break;
+        }
+
         case WM_PRINTCLIENT:
         {
             const LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
@@ -300,8 +479,8 @@ namespace
             {
                 const int saved = SaveDC(hdc);
                 SelectClipRgn(hdc, nullptr);
-                for (const auto& f : g_fractions)
-                    DrawFractionOverBar(hwnd, hdc, f);
+                for (size_t i = 0; i < g_fractions.size(); ++i)
+                    DrawFractionOverBar(hwnd, hdc, g_fractions[i], i);
                 RestoreDC(hdc, saved);
             }
             return res;
@@ -329,8 +508,8 @@ namespace
                 {
                     const int saved = SaveDC(hdc);
                     SelectClipRgn(hdc, nullptr);
-                    for (const auto& f : g_fractions)
-                        DrawFractionOverBar(hwnd, hdc, f);
+                    for (size_t i = 0; i < g_fractions.size(); ++i)
+                        DrawFractionOverBar(hwnd, hdc, g_fractions[i], i);
                     RestoreDC(hdc, saved);
                 }
                 ReleaseDC(hwnd, hdc);
@@ -339,13 +518,50 @@ namespace
             return res;
         }
 
+        case WM_MOUSEMOVE:
+        {
+            // Set the cursor here too to ensure it feels responsive
+            POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+            HDC hdc = GetDC(hwnd);
+            size_t idx = 0;
+            bool isNum = false;
+            bool hit = GetHitFractionPart(hwnd, hdc, pt, &idx, &isNum);
+            
+            if (!hit)
+            {
+                POINTL ptl = { pt.x, pt.y };
+                LRESULT charIdx = SendMessage(hwnd, EM_CHARFROMPOS, 0, (LPARAM)&ptl);
+                size_t dummy;
+                if (IsPosInsideAnyFractionBar((LONG)charIdx, &dummy))
+                    hit = true;
+            }
+            
+            ReleaseDC(hwnd, hdc);
+
+            if (hit)
+            {
+                SetCursor(LoadCursor(nullptr, (LPCWSTR)IDC_HAND));
+            }
+
+            return CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
+        }
+
         case WM_KEYDOWN:
+            if (g_state.active && wParam == VK_BACK)
+            {
+                // We handle backspace in WM_CHAR to get the proper repeat logic 
+                // and character code, so we just block it here to prevent 
+                // the RichEdit from deleting characters on the main line.
+                return 0;
+            }
+
             if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN ||
                 wParam == VK_HOME || wParam == VK_END || wParam == VK_DELETE || wParam == VK_RETURN)
             {
                 g_currentNumber.clear();
                 if (g_state.active)
                 {
+                    ShowCaret(hwnd);
                     g_state.active = false;
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -370,62 +586,73 @@ namespace
 
             if (g_state.active)
             {
-                if (ch >= L'0' && ch <= L'9')
+                if ((ch >= L'0' && ch <= L'9') || ch == 0x08) // Digit or Backspace
                 {
                     if (g_state.fractionIndex < g_fractions.size())
                     {
                         auto& f = g_fractions[g_state.fractionIndex];
-                        f.denominator.push_back(ch);
-                        if ((LONG)f.denominator.size() > f.barLen)
+                        std::wstring& target = g_state.isNumerator ? f.numerator : f.denominator;
+
+                        if (ch == 0x08) // Backspace
                         {
-                            const LONG extra = (LONG)f.denominator.size() - f.barLen;
-                            const LONG insertPos = f.barStart + f.barLen;
-                            SendMessage(hwnd, EM_SETSEL, (WPARAM)insertPos, (LPARAM)insertPos);
-                            std::wstring barExtra((size_t)extra, L'\u2500');
-                            SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)barExtra.c_str());
-                            f.barLen += extra;
-                            ShiftFractionsAfter(insertPos, extra);
-                            SendMessage(hwnd, EM_SETSEL, (WPARAM)(f.barStart + f.barLen), (LPARAM)(f.barStart + f.barLen));
+                            if (!target.empty()) target.pop_back();
                         }
+                        else
+                        {
+                            target.push_back(ch);
+                        }
+
+                        // Adjust bar length to fit both parts
+                        const size_t maxTextLen = std::max(f.numerator.size(), f.denominator.size());
+                        const LONG requiredBarLen = (LONG)std::max<size_t>(3, maxTextLen);
+
+                        if (requiredBarLen != f.barLen)
+                        {
+                            const LONG delta = requiredBarLen - f.barLen;
+
+                            // CRITICAL: We only use ReplaceSel to handle the character synchronization.
+                            // We do NOT call CallWindowProc for Backspace/Digits while g_state.active is true.
+                            SendMessage(hwnd, EM_SETSEL, (WPARAM)f.barStart, (LPARAM)(f.barStart + f.barLen));
+                            std::wstring newBar((size_t)requiredBarLen, L'\u2500');
+                            SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)newBar.c_str());
+
+                            ShiftFractionsAfter(f.barStart + f.barLen, delta);
+                            f.barLen = requiredBarLen;
+                        }
+
+                        // Cleanup: if both parts are empty, remove the fraction entity
+                        if (f.numerator.empty() && f.denominator.empty())
+                        {
+                            SendMessage(hwnd, EM_SETSEL, (WPARAM)f.barStart, (LPARAM)(f.barStart + f.barLen));
+                            SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)L"");
+                            ShiftFractionsAfter(f.barStart + 1, -f.barLen);
+                            g_fractions.erase(g_fractions.begin() + (ptrdiff_t)g_state.fractionIndex);
+                            ShowCaret(hwnd);
+                            g_state.active = false;
+                        }
+                        else
+                        {
+                            // Restore selection to start of bar to stay "focused" on the fraction
+                            SendMessage(hwnd, EM_SETSEL, (WPARAM)f.barStart, (LPARAM)f.barStart);
+                        }
+
                         InvalidateRect(hwnd, nullptr, FALSE);
                         UpdateWindow(hwnd);
                     }
-                    return 0;
+                    return 0; // Consumption of message prevents the 'extra' backspace
                 }
 
-                if (ch == 0x08)
+                if (ch == 27 || ch == 13 || ch == 9) // Escape, Enter, Tab
                 {
-                    if (g_state.fractionIndex < g_fractions.size())
-                    {
-                        auto& f = g_fractions[g_state.fractionIndex];
-                        if (!f.denominator.empty())
-                        {
-                            f.denominator.pop_back();
-                            InvalidateRect(hwnd, nullptr, FALSE);
-                            UpdateWindow(hwnd);
-                            return 0;
-                        }
-
-                        const LONG barStart = f.barStart;
-                        const LONG barEnd = f.barStart + f.barLen;
-                        SendMessage(hwnd, EM_SETSEL, (WPARAM)barStart, (LPARAM)barEnd);
-                        SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)f.numerator.c_str());
-
-                        const LONG delta = (LONG)f.numerator.size() - f.barLen;
-                        g_fractions.erase(g_fractions.begin() + (ptrdiff_t)g_state.fractionIndex);
-                        ShiftFractionsAfter(barStart + 1, delta);
-
-                        g_state.active = false;
-                        g_currentNumber = f.numerator;
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        UpdateWindow(hwnd);
-                        return 0;
-                    }
+                    ShowCaret(hwnd);
+                    g_state.active = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
 
+                // If typing anything else, drop out but keep the char
+                ShowCaret(hwnd);
                 g_state.active = false;
-                g_currentNumber.clear();
                 break;
             }
 
@@ -489,6 +716,7 @@ namespace
                     g_fractions.push_back(std::move(span));
 
                     g_state.fractionIndex = g_fractions.size() - 1;
+                    if (!g_state.active) HideCaret(hwnd);
                     g_state.active = true;
 
                     SendMessage(hwnd, EM_SETSEL, (WPARAM)(numStart + barLen), (LPARAM)(numStart + barLen));
