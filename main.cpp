@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "src/fractions.h"
+#include "src/math_editor.h"
 
 // Forward declarations
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -33,7 +33,7 @@ static bool RunFractionSelfTest(HWND hEdit, std::wstring& outDetails)
 
     // Start from a clean slate.
     SetWindowTextW(hEdit, L"");
-    ResetFractionSupport();
+    ResetMathSupport();
     SendMessage(hEdit, EM_SETSEL, 0, 0);
 
     // Simulate typing: 3/4
@@ -55,7 +55,7 @@ static bool RunFractionSelfTest(HWND hEdit, std::wstring& outDetails)
 
     // Restore.
     SetWindowTextW(hEdit, originalText.c_str());
-    ResetFractionSupport();
+    ResetMathSupport();
 
     if (!hasBar)
     {
@@ -76,6 +76,32 @@ static bool RunFractionSelfTest(HWND hEdit, std::wstring& outDetails)
 HWND g_hRichEdit;
 HWND g_hFractionButton;
 HWND g_hClearButton;
+HWND g_hDarkModeButton;
+bool g_darkMode = false;
+
+static void ApplyTheme(HWND hwnd)
+{
+    COLORREF bkColor = g_darkMode ? RGB(30, 30, 30) : RGB(255, 255, 255);
+    COLORREF textColor = g_darkMode ? RGB(220, 220, 220) : RGB(0, 0, 0);
+
+    // Update Rich Edit
+    SendMessage(g_hRichEdit, EM_SETBKGNDCOLOR, 0, (LPARAM)bkColor);
+
+    CHARFORMAT2W cf = {};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_COLOR;
+    cf.crTextColor = textColor;
+    SendMessage(g_hRichEdit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+    SendMessage(g_hRichEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+
+    // Force repaint
+    InvalidateRect(hwnd, nullptr, TRUE);
+    InvalidateRect(g_hRichEdit, nullptr, TRUE);
+    
+    // Update button text
+    SetWindowTextW(g_hDarkModeButton, g_darkMode ? L"Light Mode" : L"Dark Mode");
+}
+
 
 static HMODULE LoadRichEditWithFallback(const wchar_t** outClassName)
 {
@@ -159,7 +185,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     );
 
     // Install fraction support (RichEdit subclass + overlay drawing)
-    InstallFractionSupport(g_hRichEdit);
+    InstallMathSupport(g_hRichEdit);
 
     // Set font for Rich Edit control
     HFONT hFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
@@ -208,11 +234,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         nullptr
     );
 
+    // Create dark mode button
+    g_hDarkModeButton = CreateWindow(
+        L"BUTTON",
+        L"Dark Mode",
+        WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        330, 10, 150, 40,
+        hwnd,
+        (HMENU)3,
+        hInstance,
+        nullptr
+    );
+
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
+    // Initial theme
+    ApplyTheme(hwnd);
+
     // Make sure typing goes to the editor immediately.
     SetFocus(g_hRichEdit);
+
 
     // Run the message loop
     MSG msg = {};
@@ -239,12 +281,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         else if (LOWORD(wParam) == 2) // Clear button
         {
             SetWindowText(g_hRichEdit, L"");
-            ResetFractionSupport();
+            ResetMathSupport();
             SetFocus(g_hRichEdit);
+        }
+        else if (LOWORD(wParam) == 3) // Dark Mode button
+        {
+            g_darkMode = !g_darkMode;
+            ApplyTheme(hwnd);
         }
         return 0;
 
     case WM_SIZE:
+
     {
         const int width = LOWORD(lParam);
         const int height = HIWORD(lParam);
@@ -279,7 +327,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
+        HBRUSH hbr = CreateSolidBrush(g_darkMode ? RGB(45, 45, 45) : GetSysColor(COLOR_BTNFACE));
+        FillRect(hdc, &ps.rcPaint, hbr);
+        DeleteObject(hbr);
         EndPaint(hwnd, &ps);
     }
     return 0;
