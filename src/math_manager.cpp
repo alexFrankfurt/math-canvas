@@ -1,6 +1,7 @@
 #include "math_manager.h"
 #include "math_evaluator.h"
 #include <algorithm>
+#include <cmath>
 
 void MathManager::ShiftObjectsAfter(LONG atPosInclusive, LONG delta)
 {
@@ -69,6 +70,20 @@ double MathManager::CalculateResult(const MathObject& obj)
         for (double i = start; i <= end; ++i)
             sum += eval.Eval(obj.part3, var, i);
         return sum;
+    }
+    else if (obj.type == MathType::SystemOfEquations)
+    {
+        // No single numeric result for a system of equations
+        return 0;
+    }
+    else if (obj.type == MathType::SquareRoot)
+    {
+        double val = eval.Eval(obj.part1);
+        if (obj.part2.empty() || obj.part2 == L"2")
+            return sqrt(val);
+        double n = _wtof(obj.part2.c_str());
+        if (n == 0) return 0;
+        return pow(val, 1.0 / n);
     }
     else if (obj.type == MathType::Integral)
     {

@@ -8,12 +8,35 @@
 #include <cwctype>
 #include <algorithm>
 
+// Make anchor characters invisible by setting their text color to the
+// background color.  This prevents RichEdit from drawing U+2500 glyphs;
+// the renderer draws its own bar via GDI instead.
+static void HideAnchorChars(HWND hwnd, LONG start, LONG len)
+{
+    DWORD oldS, oldE;
+    SendMessage(hwnd, EM_GETSEL, (WPARAM)&oldS, (LPARAM)&oldE);
+    SendMessage(hwnd, EM_SETSEL, (WPARAM)start, (LPARAM)(start + len));
+
+    COLORREF bk = (COLORREF)SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, 0);
+    SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, (LPARAM)bk); // restore
+
+    CHARFORMAT2W cf = {};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_COLOR;
+    cf.crTextColor = bk;
+    cf.dwEffects = 0; // clear CFE_AUTOCOLOR
+    SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+
+    SendMessage(hwnd, EM_SETSEL, (WPARAM)oldS, (LPARAM)oldE);
+}
+
 namespace
 {
     HWND g_hEdit = nullptr;
     WNDPROC g_originalProc = nullptr;
     std::wstring g_currentCommand;
     std::wstring g_currentNumber;
+    bool g_suppressNextChar = false;
 
     static void UpdateResultIfPresent(HWND hwnd, size_t objIdx)
     {
@@ -125,6 +148,8 @@ namespace
         }
 
         case WM_MOUSEWHEEL:
+        case WM_VSCROLL:
+        case WM_HSCROLL:
         {
             LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
             InvalidateRect(hwnd, nullptr, TRUE);
@@ -144,8 +169,12 @@ namespace
             if (wParam == VK_RETURN)
             {
                 if (state.active) {
+                    auto& obj = objects[state.objectIndex];
+                    LONG afterObj = obj.barStart + obj.barLen;
                     state.active = false; UpdateResultIfPresent(hwnd, state.objectIndex);
+                    SendMessage(hwnd, EM_SETSEL, (WPARAM)afterObj, (LPARAM)afterObj);
                     ShowCaret(hwnd); InvalidateRect(hwnd, nullptr, TRUE);
+                    g_suppressNextChar = true;
                     return 0; 
                 }
                 LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
@@ -176,12 +205,17 @@ namespace
                 if (state.active) {
                     if (wParam == VK_TAB) {
                         int maxP = (objects[state.objectIndex].type == MathType::Fraction) ? 2 : 3;
+                        if (objects[state.objectIndex].type == MathType::SystemOfEquations) maxP = 3;
+                        if (objects[state.objectIndex].type == MathType::SquareRoot) maxP = 1;
                         state.activePart = (state.activePart % maxP) + 1;
                         InvalidateRect(hwnd, nullptr, TRUE);
                         return 0;
                     }
+                    auto& obj = objects[state.objectIndex];
+                    LONG afterObj = obj.barStart + obj.barLen;
                     ShowCaret(hwnd); state.active = false;
                     UpdateResultIfPresent(hwnd, state.objectIndex);
+                    SendMessage(hwnd, EM_SETSEL, (WPARAM)afterObj, (LPARAM)afterObj);
                     InvalidateRect(hwnd, nullptr, TRUE);
                 }
             }
@@ -196,6 +230,14 @@ namespace
         case WM_CHAR:
         {
             const wchar_t ch = (wchar_t)wParam;
+
+            // Suppress the WM_CHAR that follows a WM_KEYDOWN which already
+            // handled the key (e.g. Enter exiting active math mode).
+            if (g_suppressNextChar) {
+                g_suppressNextChar = false;
+                return 0;
+            }
+
             const LONG lenBefore = (LONG)GetWindowTextLengthW(hwnd);
             DWORD selStartBefore = 0, selEndBefore = 0;
             SendMessage(hwnd, EM_GETSEL, (WPARAM)&selStartBefore, (LPARAM)&selEndBefore);
@@ -217,6 +259,7 @@ namespace
                         if (reqLen != obj.barLen) {
                             SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)(obj.barStart + obj.barLen));
                             SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)reqLen, L'\u2500').c_str());
+                            HideAnchorChars(hwnd, obj.barStart, reqLen);
                             mgr.ShiftObjectsAfter(obj.barStart + obj.barLen, reqLen - obj.barLen);
                             obj.barLen = reqLen;
                         }
@@ -239,7 +282,8 @@ namespace
 
             if (state.active)
             {
-                if (ch == L'=') { ShowCaret(hwnd); state.active = false; TriggerCalculation(hwnd, state.objectIndex); return 0; }
+                if (ch == L'\t') return 0; // Tab is handled in WM_KEYDOWN; block the WM_CHAR
+                if (ch == L'=' && state.objectIndex < objects.size() && objects[state.objectIndex].type != MathType::SystemOfEquations) { ShowCaret(hwnd); state.active = false; TriggerCalculation(hwnd, state.objectIndex); return 0; }
                 if (iswprint(ch) && ch != L'^' && ch != L'_') {
                     if (state.objectIndex < objects.size()) {
                         auto& obj = objects[state.objectIndex];
@@ -253,6 +297,7 @@ namespace
                             if (reqLen != obj.barLen) {
                                 SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)(obj.barStart + obj.barLen));
                                 SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)reqLen, L'\u2500').c_str());
+                                HideAnchorChars(hwnd, obj.barStart, reqLen);
                                 mgr.ShiftObjectsAfter(obj.barStart + obj.barLen, reqLen - obj.barLen);
                                 obj.barLen = reqLen;
                             }
@@ -278,6 +323,12 @@ namespace
                 } else if (g_currentCommand == L"\\int") {
                     obj.type = MathType::Integral; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
                     obj.part1 = L"b"; obj.part2 = L"a"; obj.part3 = L"{}"; found = true;
+                } else if (g_currentCommand == L"\\sys") {
+                    obj.type = MathType::SystemOfEquations; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
+                    obj.part1 = L""; obj.part2 = L""; obj.part3 = L""; found = true;
+                } else if (g_currentCommand == L"\\sqrt") {
+                    obj.type = MathType::SquareRoot; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
+                    obj.part1 = L""; obj.part2 = L""; obj.part3 = L""; found = true;
                 }
 
                 if (found) {
@@ -292,16 +343,25 @@ namespace
                             cf.cbSize = sizeof(cf);
                             SendMessage(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
                             LONG originalFontHeight = cf.yHeight;
-                            cf.dwMask |= CFM_SIZE; cf.yHeight *= 2;
-                            SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+                            // SquareRoot: normal-height anchors (radical drawn with GDI lines)
+                            // Others: 2x-height anchors to reserve vertical space for limits
+                            if (obj.type != MathType::SquareRoot) {
+                                cf.dwMask |= CFM_SIZE; cf.yHeight *= 2;
+                                SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+                            }
                             SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)anchorStr);
                             // Push adjacent lines away from the math notation
                             {
                                 PARAFORMAT2 pf2 = {};
                                 pf2.cbSize = sizeof(pf2);
                                 pf2.dwMask = PFM_SPACEBEFORE | PFM_SPACEAFTER;
-                                pf2.dySpaceBefore = (LONG)(originalFontHeight * 1.5);
-                                pf2.dySpaceAfter  = (LONG)(originalFontHeight * 1.5);
+                                if (obj.type == MathType::SquareRoot) {
+                                    pf2.dySpaceBefore = (LONG)(originalFontHeight * 0.5);
+                                    pf2.dySpaceAfter  = (LONG)(originalFontHeight * 0.3);
+                                } else {
+                                    pf2.dySpaceBefore = (LONG)(originalFontHeight * 1.5);
+                                    pf2.dySpaceAfter  = (LONG)(originalFontHeight * 1.5);
+                                }
                                 SendMessage(hwnd, EM_SETPARAFORMAT, 0, (LPARAM)&pf2);
                             }
                             mgr.ShiftObjectsAfter(selEndBefore, 5 - cmdLen);
@@ -309,7 +369,9 @@ namespace
                             objects.push_back(std::move(obj));
                             state.objectIndex = objects.size() - 1; if (!state.active) HideCaret(hwnd);
                             state.active = true;
-                            if (ch == L'^') state.activePart = 1; else if (ch == L'_') state.activePart = 2; else state.activePart = 3;
+                            if (obj.type == MathType::SystemOfEquations) state.activePart = 1;
+                            else if (obj.type == MathType::SquareRoot) state.activePart = 1;
+                            else if (ch == L'^') state.activePart = 1; else if (ch == L'_') state.activePart = 2; else state.activePart = 3;
                             SendMessage(hwnd, EM_SETSEL, (WPARAM)(cmdStart + 5), (LPARAM)(cmdStart + 5));
                             InvalidateRect(hwnd, nullptr, TRUE); g_currentCommand.clear(); return 0;
                         }
@@ -324,6 +386,7 @@ namespace
                 const LONG bL = std::max<LONG>(3, nLen);
                 SendMessage(hwnd, EM_SETSEL, (WPARAM)nS, (LPARAM)selEndBefore);
                 SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)bL, L'\u2500').c_str());
+                HideAnchorChars(hwnd, nS, bL);
                 mgr.ShiftObjectsAfter(selEndBefore, bL - nLen);
                 MathObject obj; obj.type = MathType::Fraction; obj.barStart = nS; obj.barLen = bL; obj.part1 = g_currentNumber;
                 objects.push_back(std::move(obj));
@@ -364,6 +427,7 @@ void InsertFormattedFraction(HWND hEdit, const std::wstring& numerator, const st
     DWORD s, e; SendMessage(hEdit, EM_GETSEL, (WPARAM)&s, (LPARAM)&e);
     const LONG bL = (LONG)std::max<size_t>(3, std::max(numerator.size(), denominator.size()));
     SendMessage(hEdit, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)bL, L'\u2500').c_str());
+    HideAnchorChars(hEdit, (LONG)s, bL);
     MathObject obj; obj.type = MathType::Fraction; obj.barStart = (LONG)s; obj.barLen = bL; obj.part1 = numerator; obj.part2 = denominator;
     MathManager::Get().GetObjects().push_back(std::move(obj));
     MathManager::Get().ShiftObjectsAfter((LONG)s + 1, bL - (LONG)(e - s));
