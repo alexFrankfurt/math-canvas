@@ -3,6 +3,14 @@
 #include <richedit.h>
 #include <algorithm>
 
+// Undefine Windows min/max macros to use std::min/std::max
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
+
 namespace {
     static const bool kDebugOverlay = false;
 
@@ -389,6 +397,33 @@ void MathRenderer::Draw(HWND hEdit, HDC hdc, const MathObject& obj, size_t objIn
             DrawPart(obj.part2, eqX, yTop + lineH, 2);
             if (eqCount >= 3)
                 DrawPart(obj.part3, eqX, yTop + lineH * 2, 3);
+
+            // Draw result to the right, vertically centered on the brace
+            if (!obj.resultText.empty()) {
+                SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+                HFONT boldFont = CreateScaledFont(baseFont, renderScale, 100);
+                LOGFONTW lfB = {}; GetObjectW(boldFont, sizeof(lfB), &lfB);
+                lfB.lfWeight = FW_BOLD;
+                DeleteObject(boldFont);
+                boldFont = CreateFontIndirectW(&lfB);
+                HFONT prevF = (HFONT)SelectObject(hdc, boldFont);
+                TEXTMETRICW tmR = {}; GetTextMetricsW(hdc, &tmR);
+                
+                // Find the rightmost extent of the equations
+                SIZE eq1Sz = {}, eq2Sz = {}, eq3Sz = {};
+                GetTextExtentPoint32W(hdc, obj.part1.c_str(), (int)obj.part1.size(), &eq1Sz);
+                GetTextExtentPoint32W(hdc, obj.part2.c_str(), (int)obj.part2.size(), &eq2Sz);
+                if (eqCount >= 3) GetTextExtentPoint32W(hdc, obj.part3.c_str(), (int)obj.part3.size(), &eq3Sz);
+                
+                int maxEqWidth = std::max(std::max(eq1Sz.cx, eq2Sz.cx), eq3Sz.cx);
+                int resultX = eqX + maxEqWidth + 10; // Add some padding
+                int resultBaseline = yMid; // Vertically center with the brace
+                
+                SetTextColor(hdc, activeColor);
+                TextOutW(hdc, resultX, resultBaseline, obj.resultText.c_str(), (int)obj.resultText.size());
+                SelectObject(hdc, prevF);
+                DeleteObject(boldFont);
+            }
         }
     }
     else if (obj.type == MathType::SquareRoot)

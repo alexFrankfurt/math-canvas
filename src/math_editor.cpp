@@ -56,11 +56,18 @@ namespace
         auto& obj = objects[objIdx];
         if (obj.resultText.empty()) return;
 
-        double result = mgr.CalculateResult(obj);
-        wchar_t resultBuf[128];
-        if (result == (long long)result) swprintf_s(resultBuf, L" %lld", (long long)result);
-        else swprintf_s(resultBuf, L" %.3g", result);
-        obj.resultText = std::wstring(L" \uFF1D") + resultBuf;
+        if (obj.type == MathType::SystemOfEquations) {
+            // For system of equations, use the dedicated calculation method
+            std::wstring systemResult = mgr.CalculateSystemResult(obj);
+            obj.resultText = systemResult; // CalculateSystemResult already includes the equals sign
+        } else {
+            // For other math types (fractions, etc.), use the generic calculation
+            double result = mgr.CalculateResult(obj);
+            wchar_t resultBuf[128];
+            if (result == (long long)result) swprintf_s(resultBuf, L" %lld", (long long)result);
+            else swprintf_s(resultBuf, L" %.3g", result);
+            obj.resultText = std::wstring(L" \uFF1D") + resultBuf;
+        }
         InvalidateRect(hwnd, nullptr, TRUE);
     }
 
@@ -70,18 +77,17 @@ namespace
         auto& objects = mgr.GetObjects();
         if (objIdx >= objects.size()) return;
         auto& obj = objects[objIdx];
-        
+
         if (obj.type == MathType::SystemOfEquations) {
-            if (!obj.part1.empty() && !obj.part2.empty()) {
-                // Fix: Use existing MathManager method to get valid system result
-                std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
-                obj.resultText = systemResult;
-                SendMessage(hwnd, EM_SETSEL, obj.barStart + obj.barLen, obj.barStart + obj.barLen);
-                InvalidateRect(hwnd, nullptr, TRUE);
-                return;
-            }
+            // For system of equations, use the dedicated calculation method
+            std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
+            obj.resultText = systemResult; // CalculateSystemResult already includes the equals sign
+            SendMessage(hwnd, EM_SETSEL, obj.barStart + obj.barLen, obj.barStart + obj.barLen);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return;
         }
-        
+
+        // Handle other math types (fractions, etc.)
         double result = mgr.CalculateResult(obj);
         wchar_t resultBuf[128];
         if (result == (long long)result) swprintf_s(resultBuf, L" %lld", (long long)result);
@@ -113,7 +119,7 @@ namespace
                     hit = mgr.IsPosInsideAnyObject((LONG)charIdx);
                 }
                 ReleaseDC(hwnd, hdc);
-                if (hit) { SetCursor(LoadCursor(nullptr, (LPCWSTR)IDC_HAND)); return TRUE; }
+                if (hit) { SetCursor(LoadCursor(nullptr, IDC_HAND)); return TRUE; }
             }
             break;
         }
@@ -201,14 +207,9 @@ namespace
                         if (obj.part1.empty() || obj.part2.empty()) {
                             return 0;
                         }
-                        
+
                         // Proceed with calculation
                         TriggerCalculation(hwnd, state.objectIndex);
-                        // Set result text for system of equations
-                        auto& obj = objects[state.objectIndex];
-                        // Get properly formatted system result with status handling
-                        std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
-                        obj.resultText = systemResult;
                         InvalidateRect(hwnd, nullptr, TRUE);  // Force immediate UI refresh
                     }
                     UpdateResultIfPresent(hwnd, state.objectIndex);
@@ -323,7 +324,38 @@ namespace
             if (state.active)
             {
                 if (ch == L'\t') return 0; // Tab is handled in WM_KEYDOWN; block the WM_CHAR
-                if (ch == L'=' && state.objectIndex < objects.size() && objects[state.objectIndex].type != MathType::SystemOfEquations) { ShowCaret(hwnd); state.active = false; TriggerCalculation(hwnd, state.objectIndex); return 0; }
+                if (ch == L'=' && state.objectIndex < objects.size()) { 
+                    // For system of equations, we allow typing the equals sign in equations (e.g., x+y=5)
+                    // Only trigger calculation for non-system types
+                    if (objects[state.objectIndex].type != MathType::SystemOfEquations) {
+                        // For other types (fractions, etc.), trigger calculation normally
+                        ShowCaret(hwnd); 
+                        state.active = false; 
+                        TriggerCalculation(hwnd, state.objectIndex); 
+                        return 0; 
+                    }
+                    // For system of equations, allow the equals sign to be typed normally
+                    if (state.objectIndex < objects.size()) {
+                        auto& obj = objects[state.objectIndex];
+                        std::wstring& target = (state.activePart == 1) ? obj.part1 : (state.activePart == 2 ? obj.part2 : obj.part3);
+                        target.push_back(ch);
+
+                        if (obj.type == MathType::Fraction) {
+                            const LONG reqLen = (LONG)std::max<size_t>(3, std::max(obj.part1.size(), obj.part2.size()));
+                            if (reqLen != obj.barLen) {
+                                SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)(obj.barStart + obj.barLen));
+                                SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)reqLen, L'\u2500').c_str());
+                                HideAnchorChars(hwnd, obj.barStart, reqLen);
+                                mgr.ShiftObjectsAfter(obj.barStart + obj.barLen, reqLen - obj.barLen);
+                                obj.barLen = reqLen;
+                            }
+                        }
+                        SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)obj.barStart);
+                        UpdateResultIfPresent(hwnd, state.objectIndex);
+                        InvalidateRect(hwnd, nullptr, TRUE);
+                    }
+                    return 0;
+                }
                 if (iswprint(ch) && ch != L'^' && ch != L'_') {
                     if (state.objectIndex < objects.size()) {
                         auto& obj = objects[state.objectIndex];

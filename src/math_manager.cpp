@@ -119,57 +119,45 @@ std::wstring MathManager::CalculateSystemResult(const MathObject& obj)
 {
     MathEvaluator eval;
     std::vector<std::wstring> equations;
-    
-    // Parse equations from part3 field (can be comma, semicolon, or newline separated)
-    if (!obj.part3.empty()) {
-        std::wstring equation;
-        for (wchar_t c : obj.part3) {
-            if (c == L',' || c == L';' || c == L'\n' || c == L'\r') {
-                if (!equation.empty()) {
-                    equations.push_back(equation);
-                    equation.clear();
-                }
-            } else {
-                equation += c;
-            }
-        }
-        if (!equation.empty()) {
-            equations.push_back(equation);
-        }
-    }
-    
-    // Solve the system
-    auto solution = eval.SolveSystemOfEquations(equations);
-    
+
+    // Parse equations from the parts - for system of equations, we use part1 and part2 as separate equations
+    // and part3 could be a third equation if present
+    if (!obj.part1.empty()) equations.push_back(obj.part1);
+    if (!obj.part2.empty()) equations.push_back(obj.part2);
+    if (!obj.part3.empty()) equations.push_back(obj.part3);
+
+    // Solve the system using rational arithmetic for exact results
+    auto solution = eval.SolveSystemOfEquationsRational(equations);
+
     // Format the result
-    int status = 0;
+    long long status = 0;
     if (solution.find(L"status") != solution.end()) {
-        status = (int)solution[L"status"];
+        status = solution[L"status"].num;  // Get numerator of status rational
     }
-    
+
     if (status == 0) {
         // Build result string directly
-        std::wstring result = L" \uFF1D ";
+        std::wstring result = L" \uFF1D ";  // Full-width equals sign
         bool first = true;
         for (const auto& [var, val] : solution) {
             if (var == L"status") continue;
-            
+
             if (!first) {
                 result += L", ";
             }
-            
+
             result += var + L"=";
-            if (val == (long long)val) {
-                result += std::to_wstring((long long)val);
-            } else {
-                wchar_t buf[64];
-                swprintf(buf, 64, L"%.3f", val);
-                result += buf;
-            }
             
+            // Format as fraction if denominator is not 1, otherwise as integer
+            if (val.den == 1) {
+                result += std::to_wstring(val.num);
+            } else {
+                result += val.toString();  // Will format as "num/den"
+            }
+
             first = false;
         }
-        
+
         // If no variables were added (all zero), explicitly add them
         if (first) {
             result += L"x=0, y=0";
