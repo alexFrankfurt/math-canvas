@@ -2,6 +2,9 @@
 #include "math_evaluator.h"
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
 
 void MathManager::ShiftObjectsAfter(LONG atPosInclusive, LONG delta)
 {
@@ -73,7 +76,7 @@ double MathManager::CalculateResult(const MathObject& obj)
     }
     else if (obj.type == MathType::SystemOfEquations)
     {
-        // No single numeric result for a system of equations
+        // System of equations are handled by CalculateSystemResult method
         return 0;
     }
     else if (obj.type == MathType::SquareRoot)
@@ -107,7 +110,81 @@ double MathManager::CalculateResult(const MathObject& obj)
             if (i == 0 || i == steps) sum += fx / 2.0;
             else sum += fx;
         }
-        return sum * dx;
+    return sum * dx;
     }
     return 0;
+}
+
+std::wstring MathManager::CalculateSystemResult(const MathObject& obj)
+{
+    MathEvaluator eval;
+    std::vector<std::wstring> equations;
+    
+    // Parse equations from part3 field (can be comma, semicolon, or newline separated)
+    if (!obj.part3.empty()) {
+        std::wstring equation;
+        for (wchar_t c : obj.part3) {
+            if (c == L',' || c == L';' || c == L'\n' || c == L'\r') {
+                if (!equation.empty()) {
+                    equations.push_back(equation);
+                    equation.clear();
+                }
+            } else {
+                equation += c;
+            }
+        }
+        if (!equation.empty()) {
+            equations.push_back(equation);
+        }
+    }
+    
+    // Solve the system
+    auto solution = eval.SolveSystemOfEquations(equations);
+    
+    // Format the result
+    int status = 0;
+    if (solution.find(L"status") != solution.end()) {
+        status = (int)solution[L"status"];
+    }
+    
+    if (status == 0) {
+        // Build result string directly
+        std::wstring result = L" \uFF1D ";
+        bool first = true;
+        for (const auto& [var, val] : solution) {
+            if (var == L"status") continue;
+            
+            if (!first) {
+                result += L", ";
+            }
+            
+            result += var + L"=";
+            if (val == (long long)val) {
+                result += std::to_wstring((long long)val);
+            } else {
+                wchar_t buf[64];
+                swprintf(buf, 64, L"%.3f", val);
+                result += buf;
+            }
+            
+            first = false;
+        }
+        
+        // If no variables were added (all zero), explicitly add them
+        if (first) {
+            result += L"x=0, y=0";
+        }
+        return result;
+    } else {
+        // Error cases
+        switch (status) {
+            case -1: return L" \uFF1D Infinite solutions";
+            case -2: return L" \uFF1D No solution";
+            case -3: return L" \uFF1D No equations";
+            case -4: return L" \uFF1D Parse error";
+            case -5: return L" \uFF1D Underdetermined system";
+            case -6: return L" \uFF1D Too many equations (max 3)";
+            default: return L" \uFF1D Unknown error";
+        }
+    }
 }

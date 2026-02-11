@@ -8,27 +8,37 @@
 #include <cwctype>
 #include <algorithm>
 
-// Make anchor characters invisible by setting their text color to the
-// background color.  This prevents RichEdit from drawing U+2500 glyphs;
-// the renderer draws its own bar via GDI instead.
-static void HideAnchorChars(HWND hwnd, LONG start, LONG len)
-{
-    DWORD oldS, oldE;
-    SendMessage(hwnd, EM_GETSEL, (WPARAM)&oldS, (LPARAM)&oldE);
-    SendMessage(hwnd, EM_SETSEL, (WPARAM)start, (LPARAM)(start + len));
+    // Make anchor characters invisible by setting their text color to the
+    // background color.  This prevents RichEdit from drawing U+2500 glyphs;
+    // the renderer draws its own bar via GDI instead.
+    static void HideAnchorChars(HWND hwnd, LONG start, LONG len)
+    {
+        DWORD oldS, oldE;
+        SendMessage(hwnd, EM_GETSEL, (WPARAM)&oldS, (LPARAM)&oldE);
+        SendMessage(hwnd, EM_SETSEL, (WPARAM)start, (LPARAM)(start + len));
 
-    COLORREF bk = (COLORREF)SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, 0);
-    SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, (LPARAM)bk); // restore
+        COLORREF bk = (COLORREF)SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, 0);
+        SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, (LPARAM)bk); // restore
 
-    CHARFORMAT2W cf = {};
-    cf.cbSize = sizeof(cf);
-    cf.dwMask = CFM_COLOR;
-    cf.crTextColor = bk;
-    cf.dwEffects = 0; // clear CFE_AUTOCOLOR
-    SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+        CHARFORMAT2W cf = {};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_COLOR;
+        cf.crTextColor = bk;
+        cf.dwEffects = 0; // clear CFE_AUTOCOLOR
+        SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 
-    SendMessage(hwnd, EM_SETSEL, (WPARAM)oldS, (LPARAM)oldE);
-}
+        SendMessage(hwnd, EM_SETSEL, (WPARAM)oldS, (LPARAM)oldE);
+    }
+
+    // Structure to hold result of equation solving with detailed error messages
+    struct EquationResult {
+        double value;
+        std::wstring message;
+        bool success;
+
+        EquationResult() : value(0), success(false) {}
+        EquationResult(double v, const std::wstring& msg, bool s) : value(v), message(msg), success(s) {}
+    };
 
 namespace
 {
@@ -60,6 +70,17 @@ namespace
         auto& objects = mgr.GetObjects();
         if (objIdx >= objects.size()) return;
         auto& obj = objects[objIdx];
+        
+        if (obj.type == MathType::SystemOfEquations) {
+            if (!obj.part1.empty() && !obj.part2.empty()) {
+                // Fix: Use existing MathManager method to get valid system result
+                std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
+                obj.resultText = systemResult;
+                SendMessage(hwnd, EM_SETSEL, obj.barStart + obj.barLen, obj.barStart + obj.barLen);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return;
+            }
+        }
         
         double result = mgr.CalculateResult(obj);
         wchar_t resultBuf[128];
@@ -171,7 +192,26 @@ namespace
                 if (state.active) {
                     auto& obj = objects[state.objectIndex];
                     LONG afterObj = obj.barStart + obj.barLen;
-                    state.active = false; UpdateResultIfPresent(hwnd, state.objectIndex);
+                    state.active = false; 
+                    
+
+                    // For system of equations, trigger calculation on Enter regardless of position
+                    if (obj.type == MathType::SystemOfEquations) {
+                        // Simple validation - just make sure both parts exist
+                        if (obj.part1.empty() || obj.part2.empty()) {
+                            return 0;
+                        }
+                        
+                        // Proceed with calculation
+                        TriggerCalculation(hwnd, state.objectIndex);
+                        // Set result text for system of equations
+                        auto& obj = objects[state.objectIndex];
+                        // Get properly formatted system result with status handling
+                        std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
+                        obj.resultText = systemResult;
+                        InvalidateRect(hwnd, nullptr, TRUE);  // Force immediate UI refresh
+                    }
+                    UpdateResultIfPresent(hwnd, state.objectIndex);
                     SendMessage(hwnd, EM_SETSEL, (WPARAM)afterObj, (LPARAM)afterObj);
                     ShowCaret(hwnd); InvalidateRect(hwnd, nullptr, TRUE);
                     g_suppressNextChar = true;

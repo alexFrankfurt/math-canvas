@@ -37,16 +37,16 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
-
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <PreBuildEvent>
-      <Command>taskkill /F /IM windeskapp.exe &gt;NUL 2&gt;&amp;1 || exit /B 0</Command>
     </PreBuildEvent>
     <PreLinkEvent>
-      <Command>taskkill /F /IM windeskapp.exe &gt;NUL 2&gt;&amp;1 || exit /B 0</Command>
     </PreLinkEvent>
     <PostBuildEvent>
-      <Command>copy /Y "$(TargetPath)" "$(ProjectDir)windeskapp.exe" &gt;NUL</Command>
+      <Command>copy /Y "$(TargetPath)" "$(ProjectDir)windeskapp.exe" >NUL</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

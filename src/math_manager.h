@@ -2,6 +2,7 @@
 
 #include "math_types.h"
 #include <vector>
+#include <string>
 
 class MathManager
 {
@@ -17,6 +18,7 @@ public:
     void DeleteObjectsInRange(LONG start, LONG end);
     bool IsPosInsideAnyObject(LONG pos, size_t* outIndex = nullptr);
     double CalculateResult(const MathObject& obj);
+    std::wstring CalculateSystemResult(const MathObject& obj);
 
 private:
     MathManager() = default;

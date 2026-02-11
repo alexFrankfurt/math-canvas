@@ -1,11 +1,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <map>
 
 class MathEvaluator
 {
 public:
     double Eval(const std::wstring& expr, const std::wstring& varName = L"", double varValue = 0);
+    std::map<std::wstring, double> SolveSystemOfEquations(const std::vector<std::wstring>& equations);
 
 private:
     std::wstring expr;
