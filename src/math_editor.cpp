@@ -30,7 +30,103 @@
         SendMessage(hwnd, EM_SETSEL, (WPARAM)oldS, (LPARAM)oldE);
     }
 
-    // Structure to hold result of equation solving with detailed error messages
+    static bool BuildMathDirtyRect(HWND hwnd, RECT& outRc);
+
+    static void RequestMathRepaint(HWND hwnd)
+    {
+        RECT dirty = {};
+        if (BuildMathDirtyRect(hwnd, dirty))
+            RedrawWindow(hwnd, &dirty, nullptr, RDW_INVALIDATE | RDW_NOERASE);
+        else
+            RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
+    }
+
+    static void RestoreTypingFormat(HWND hwnd)
+    {
+        COLORREF bk = (COLORREF)SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, 0);
+        SendMessage(hwnd, EM_SETBKGNDCOLOR, 0, (LPARAM)bk);
+        const int brightness = (GetRValue(bk) * 299 + GetGValue(bk) * 587 + GetBValue(bk) * 114) / 1000;
+        const COLORREF textColor = (brightness < 128) ? RGB(220, 220, 220) : RGB(0, 0, 0);
+
+        CHARFORMAT2W cf = {};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_COLOR;
+        cf.dwEffects = 0;
+        cf.crTextColor = textColor;
+        SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    }
+
+    static bool HasObjectAtOrAfter(const std::vector<MathObject>& objects, LONG atPosInclusive)
+    {
+        for (const auto& obj : objects)
+            if (obj.barStart >= atPosInclusive) return true;
+        return false;
+    }
+
+    static bool BuildMathDirtyRect(HWND hwnd, RECT& outRc)
+    {
+        auto& objects = MathManager::Get().GetObjects();
+        if (objects.empty()) return false;
+
+        HDC hdc = GetDC(hwnd);
+        if (!hdc) return false;
+
+        HFONT baseFont = (HFONT)SendMessage(hwnd, WM_GETFONT, 0, 0);
+        if (!baseFont) baseFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT oldFont = (HFONT)SelectObject(hdc, baseFont);
+        TEXTMETRICW tm = {};
+        GetTextMetricsW(hdc, &tm);
+
+        bool hasRect = false;
+        RECT unionRc = {};
+        for (const auto& obj : objects)
+        {
+            POINT ptStart = {}, ptEnd = {};
+            if (!MathRenderer::TryGetCharPos(hwnd, obj.barStart, ptStart)) continue;
+            if (!MathRenderer::TryGetCharPos(hwnd, obj.barStart + (std::max)(0L, obj.barLen - 1), ptEnd)) continue;
+
+            RECT rc = {};
+            rc.left = (std::min)(ptStart.x, ptEnd.x) - (tm.tmAveCharWidth * 4);
+            rc.right = (std::max)(ptStart.x, ptEnd.x) + (tm.tmAveCharWidth * 40);
+            rc.top = ptStart.y - (tm.tmHeight * 4);
+            rc.bottom = ptStart.y + (tm.tmHeight * 6);
+
+            if (!hasRect) {
+                unionRc = rc;
+                hasRect = true;
+            }
+            else {
+                unionRc.left = (std::min)(unionRc.left, rc.left);
+                unionRc.top = (std::min)(unionRc.top, rc.top);
+                unionRc.right = (std::max)(unionRc.right, rc.right);
+                unionRc.bottom = (std::max)(unionRc.bottom, rc.bottom);
+            }
+        }
+
+        SelectObject(hdc, oldFont);
+        ReleaseDC(hwnd, hdc);
+
+        if (!hasRect) return false;
+
+        RECT client = {};
+        GetClientRect(hwnd, &client);
+        if (!IntersectRect(&outRc, &unionRc, &client)) return false;
+        return true;
+    }
+
+    struct ScopedNoRedraw
+    {
+        HWND hwnd;
+        explicit ScopedNoRedraw(HWND h) : hwnd(h)
+        {
+            SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
+        }
+        ~ScopedNoRedraw()
+        {
+            SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
+        }
+    };
+
     struct EquationResult {
         double value;
         std::wstring message;
@@ -68,7 +164,7 @@ namespace
             else swprintf_s(resultBuf, L" %.3g", result);
             obj.resultText = std::wstring(L" \uFF1D") + resultBuf;
         }
-        InvalidateRect(hwnd, nullptr, TRUE);
+        RequestMathRepaint(hwnd);
     }
 
     static void TriggerCalculation(HWND hwnd, size_t objIdx)
@@ -83,7 +179,8 @@ namespace
             std::wstring systemResult = MathManager::Get().CalculateSystemResult(obj);
             obj.resultText = systemResult; // CalculateSystemResult already includes the equals sign
             SendMessage(hwnd, EM_SETSEL, obj.barStart + obj.barLen, obj.barStart + obj.barLen);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            RestoreTypingFormat(hwnd);
+            RequestMathRepaint(hwnd);
             return;
         }
 
@@ -95,7 +192,8 @@ namespace
 
         obj.resultText = std::wstring(L" \uFF1D") + resultBuf;
         SendMessage(hwnd, EM_SETSEL, obj.barStart + obj.barLen, obj.barStart + obj.barLen);
-        InvalidateRect(hwnd, nullptr, TRUE);
+        RestoreTypingFormat(hwnd);
+        RequestMathRepaint(hwnd);
     }
 
     static LRESULT CALLBACK MathRichEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -149,27 +247,64 @@ namespace
                 state.objectIndex = idx;
                 state.activePart = part;
                 SendMessage(hwnd, EM_SETSEL, (WPARAM)objects[idx].barStart, (LPARAM)objects[idx].barStart);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                RequestMathRepaint(hwnd);
                 return 0; 
             }
             else
             {
-                if (state.active) { ShowCaret(hwnd); state.active = false; InvalidateRect(hwnd, nullptr, TRUE); }
+                if (state.active) { ShowCaret(hwnd); state.active = false; RequestMathRepaint(hwnd); }
             }
             break; 
         }
 
         case WM_PAINT:
+        {
+            if (objects.empty())
+            {
+                // No math objects — pass through to RichEdit directly.
+                return CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
+            }
+
+            // Double-buffer: compose RichEdit content + math overlays
+            // off-screen, then blit once to prevent flicker.
+            PAINTSTRUCT ps;
+            HDC hdcPaint = BeginPaint(hwnd, &ps);
+
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+
+            HDC hdcMem = CreateCompatibleDC(hdcPaint);
+            HBITMAP hbm = CreateCompatibleBitmap(hdcPaint, rc.right, rc.bottom);
+            HBITMAP hbmOld = (HBITMAP)SelectObject(hdcMem, hbm);
+
+            // Render RichEdit content into back-buffer.
+            CallWindowProc(g_originalProc, hwnd, WM_PRINTCLIENT, (WPARAM)hdcMem, PRF_CLIENT);
+
+            // Draw math overlays on top.
+            if (state.active) HideCaret(hwnd);
+            for (size_t i = 0; i < objects.size(); ++i)
+                MathRenderer::Draw(hwnd, hdcMem, objects[i], i, state);
+
+            // Single
+            BitBlt(hdcPaint, 0, 0, rc.right, rc.bottom, hdcMem, 0, 0, SRCCOPY);
+
+            SelectObject(hdcMem, hbmOld);
+            DeleteObject(hbm);
+            DeleteDC(hdcMem);
+
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
         case WM_PRINTCLIENT:
         {
             const LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
-            HDC hdc = (uMsg == WM_PAINT) ? GetDC(hwnd) : (HDC)wParam;
+            HDC hdc = (HDC)wParam;
             if (hdc)
             {
                 if (state.active) HideCaret(hwnd);
                 for (size_t i = 0; i < objects.size(); ++i)
                     MathRenderer::Draw(hwnd, hdc, objects[i], i, state);
-                if (uMsg == WM_PAINT) ReleaseDC(hwnd, hdc);
             }
             return res;
         }
@@ -179,7 +314,7 @@ namespace
         case WM_HSCROLL:
         {
             LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            RequestMathRepaint(hwnd);
             return res;
         }
 
@@ -210,17 +345,20 @@ namespace
 
                         // Proceed with calculation
                         TriggerCalculation(hwnd, state.objectIndex);
-                        InvalidateRect(hwnd, nullptr, TRUE);  // Force immediate UI refresh
+                        RequestMathRepaint(hwnd);  // Force immediate UI refresh
                     }
                     UpdateResultIfPresent(hwnd, state.objectIndex);
                     SendMessage(hwnd, EM_SETSEL, (WPARAM)afterObj, (LPARAM)afterObj);
-                    ShowCaret(hwnd); InvalidateRect(hwnd, nullptr, TRUE);
+                    RestoreTypingFormat(hwnd);
+                    ShowCaret(hwnd); RequestMathRepaint(hwnd);
                     g_suppressNextChar = true;
                     return 0; 
                 }
                 LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
-                mgr.ShiftObjectsAfter((LONG)selEnd, (LONG)GetWindowTextLengthW(hwnd) - lenBefore);
-                if (!objects.empty()) InvalidateRect(hwnd, nullptr, TRUE);
+                const LONG delta = (LONG)GetWindowTextLengthW(hwnd) - lenBefore;
+                const bool affectsObjects = (delta != 0) && HasObjectAtOrAfter(objects, (LONG)selEnd);
+                mgr.ShiftObjectsAfter((LONG)selEnd, delta);
+                if (affectsObjects) RequestMathRepaint(hwnd);
                 return res;
             }
 
@@ -234,7 +372,7 @@ namespace
                     SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)L"");
                     mgr.ShiftObjectsAfter(obj.barStart + 1, -obj.barLen);
                     objects.erase(objects.begin() + objIdx);
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    RequestMathRepaint(hwnd);
                     return 0;
                 }
             }
@@ -248,8 +386,11 @@ namespace
                         int maxP = (objects[state.objectIndex].type == MathType::Fraction) ? 2 : 3;
                         if (objects[state.objectIndex].type == MathType::SystemOfEquations) maxP = 3;
                         if (objects[state.objectIndex].type == MathType::SquareRoot) maxP = 1;
+                        if (objects[state.objectIndex].type == MathType::AbsoluteValue) maxP = 1;
+                        if (objects[state.objectIndex].type == MathType::Power) maxP = 2;
+                        if (objects[state.objectIndex].type == MathType::Logarithm) maxP = 2;
                         state.activePart = (state.activePart % maxP) + 1;
-                        InvalidateRect(hwnd, nullptr, TRUE);
+                        RequestMathRepaint(hwnd);
                         return 0;
                     }
                     auto& obj = objects[state.objectIndex];
@@ -257,13 +398,16 @@ namespace
                     ShowCaret(hwnd); state.active = false;
                     UpdateResultIfPresent(hwnd, state.objectIndex);
                     SendMessage(hwnd, EM_SETSEL, (WPARAM)afterObj, (LPARAM)afterObj);
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    RestoreTypingFormat(hwnd);
+                    RequestMathRepaint(hwnd);
                 }
             }
             {
                 LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
-                mgr.ShiftObjectsAfter((LONG)selEnd, (LONG)GetWindowTextLengthW(hwnd) - lenBefore);
-                if (!objects.empty()) InvalidateRect(hwnd, nullptr, TRUE);
+                const LONG delta = (LONG)GetWindowTextLengthW(hwnd) - lenBefore;
+                const bool affectsObjects = (delta != 0) && HasObjectAtOrAfter(objects, (LONG)selEnd);
+                mgr.ShiftObjectsAfter((LONG)selEnd, delta);
+                if (affectsObjects) RequestMathRepaint(hwnd);
                 return res;
             }
         }
@@ -316,7 +460,7 @@ namespace
                         SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)obj.barStart);
                     }
                     UpdateResultIfPresent(hwnd, state.objectIndex);
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    RequestMathRepaint(hwnd);
                 }
                 return 0;
             }
@@ -352,7 +496,7 @@ namespace
                         }
                         SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)obj.barStart);
                         UpdateResultIfPresent(hwnd, state.objectIndex);
-                        InvalidateRect(hwnd, nullptr, TRUE);
+                        RequestMathRepaint(hwnd);
                     }
                     return 0;
                 }
@@ -376,12 +520,12 @@ namespace
                         }
                         SendMessage(hwnd, EM_SETSEL, (WPARAM)obj.barStart, (LPARAM)obj.barStart);
                         UpdateResultIfPresent(hwnd, state.objectIndex);
-                        InvalidateRect(hwnd, nullptr, TRUE);
+                        RequestMathRepaint(hwnd);
                     }
                     return 0;
                 }
-                if (ch == L'^') { state.activePart = 1; InvalidateRect(hwnd, nullptr, TRUE); return 0; }
-                if (ch == L'_') { state.activePart = 2; InvalidateRect(hwnd, nullptr, TRUE); return 0; }
+                if (ch == L'^') { state.activePart = 1; RequestMathRepaint(hwnd); return 0; }
+                if (ch == L'_') { state.activePart = 2; RequestMathRepaint(hwnd); return 0; }
                 ShowCaret(hwnd); state.active = false;
             }
 
@@ -401,6 +545,15 @@ namespace
                 } else if (g_currentCommand == L"\\sqrt") {
                     obj.type = MathType::SquareRoot; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
                     obj.part1 = L""; obj.part2 = L""; obj.part3 = L""; found = true;
+                } else if (g_currentCommand == L"\\abs") {
+                    obj.type = MathType::AbsoluteValue; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
+                    obj.part1 = L""; obj.part2 = L""; obj.part3 = L""; found = true;
+                } else if (g_currentCommand == L"\\pow") {
+                    obj.type = MathType::Power; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
+                    obj.part1 = L""; obj.part2 = L""; obj.part3 = L""; found = true;
+                } else if (g_currentCommand == L"\\log") {
+                    obj.type = MathType::Logarithm; wcscpy_s(anchorStr, L"\u00A0\u00A0\u00A0\u00A0\u00A0");
+                    obj.part1 = L"10"; obj.part2 = L""; obj.part3 = L""; found = true;
                 }
 
                 if (found) {
@@ -410,42 +563,48 @@ namespace
                         wchar_t v[64] = {0}; TEXTRANGEW tr = { {cmdStart, (LONG)selEndBefore}, v };
                         SendMessage(hwnd, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
                         if (g_currentCommand == v) {
-                            SendMessage(hwnd, EM_SETSEL, (WPARAM)cmdStart, (LPARAM)selEndBefore);
-                            CHARFORMAT2W cf = {};
-                            cf.cbSize = sizeof(cf);
-                            SendMessage(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
-                            LONG originalFontHeight = cf.yHeight;
-                            // SquareRoot: normal-height anchors (radical drawn with GDI lines)
-                            // Others: 2x-height anchors to reserve vertical space for limits
-                            if (obj.type != MathType::SquareRoot) {
-                                cf.dwMask |= CFM_SIZE; cf.yHeight *= 2;
-                                SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
-                            }
-                            SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)anchorStr);
-                            // Push adjacent lines away from the math notation
                             {
-                                PARAFORMAT2 pf2 = {};
-                                pf2.cbSize = sizeof(pf2);
-                                pf2.dwMask = PFM_SPACEBEFORE | PFM_SPACEAFTER;
-                                if (obj.type == MathType::SquareRoot) {
-                                    pf2.dySpaceBefore = (LONG)(originalFontHeight * 0.5);
-                                    pf2.dySpaceAfter  = (LONG)(originalFontHeight * 0.3);
-                                } else {
-                                    pf2.dySpaceBefore = (LONG)(originalFontHeight * 1.5);
-                                    pf2.dySpaceAfter  = (LONG)(originalFontHeight * 1.5);
+                                ScopedNoRedraw noRedraw(hwnd);
+                                SendMessage(hwnd, EM_SETSEL, (WPARAM)cmdStart, (LPARAM)selEndBefore);
+                                CHARFORMAT2W cf = {};
+                                cf.cbSize = sizeof(cf);
+                                SendMessage(hwnd, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+                                LONG originalFontHeight = cf.yHeight;
+                                // SquareRoot and AbsoluteValue: normal-height anchors (drawn with GDI lines)
+                                // Others: 2x-height anchors to reserve vertical space for limits
+                                if (obj.type != MathType::SquareRoot && obj.type != MathType::AbsoluteValue) {
+                                    cf.dwMask |= CFM_SIZE; cf.yHeight *= 2;
+                                    SendMessage(hwnd, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
                                 }
-                                SendMessage(hwnd, EM_SETPARAFORMAT, 0, (LPARAM)&pf2);
+                                SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)anchorStr);
+                                // Push adjacent lines away from the math notation
+                                {
+                                    PARAFORMAT2 pf2 = {};
+                                    pf2.cbSize = sizeof(pf2);
+                                    pf2.dwMask = PFM_SPACEBEFORE | PFM_SPACEAFTER;
+                                    if (obj.type == MathType::SquareRoot || obj.type == MathType::AbsoluteValue) {
+                                        pf2.dySpaceBefore = (LONG)(originalFontHeight * 0.5);
+                                        pf2.dySpaceAfter  = (LONG)(originalFontHeight * 0.3);
+                                    } else {
+                                        pf2.dySpaceBefore = (LONG)(originalFontHeight * 1.5);
+                                        pf2.dySpaceAfter  = (LONG)(originalFontHeight * 1.5);
+                                    }
+                                    SendMessage(hwnd, EM_SETPARAFORMAT, 0, (LPARAM)&pf2);
+                                }
+                                mgr.ShiftObjectsAfter(selEndBefore, 5 - cmdLen);
+                                obj.barStart = cmdStart; obj.barLen = 5;
+                                objects.push_back(std::move(obj));
+                                state.objectIndex = objects.size() - 1; if (!state.active) HideCaret(hwnd);
+                                state.active = true;
+                                if (obj.type == MathType::SystemOfEquations) state.activePart = 1;
+                                else if (obj.type == MathType::SquareRoot) state.activePart = 1;
+                                else if (obj.type == MathType::AbsoluteValue) state.activePart = 1;
+                                else if (obj.type == MathType::Power) state.activePart = 1;
+                                else if (obj.type == MathType::Logarithm) state.activePart = 2;  // Start with argument
+                                else if (ch == L'^') state.activePart = 1; else if (ch == L'_') state.activePart = 2; else state.activePart = 3;
+                                SendMessage(hwnd, EM_SETSEL, (WPARAM)(cmdStart + 5), (LPARAM)(cmdStart + 5));
                             }
-                            mgr.ShiftObjectsAfter(selEndBefore, 5 - cmdLen);
-                            obj.barStart = cmdStart; obj.barLen = 5;
-                            objects.push_back(std::move(obj));
-                            state.objectIndex = objects.size() - 1; if (!state.active) HideCaret(hwnd);
-                            state.active = true;
-                            if (obj.type == MathType::SystemOfEquations) state.activePart = 1;
-                            else if (obj.type == MathType::SquareRoot) state.activePart = 1;
-                            else if (ch == L'^') state.activePart = 1; else if (ch == L'_') state.activePart = 2; else state.activePart = 3;
-                            SendMessage(hwnd, EM_SETSEL, (WPARAM)(cmdStart + 5), (LPARAM)(cmdStart + 5));
-                            InvalidateRect(hwnd, nullptr, TRUE); g_currentCommand.clear(); return 0;
+                            RequestMathRepaint(hwnd); g_currentCommand.clear(); return 0;
                         }
                     }
                 }
@@ -456,16 +615,19 @@ namespace
                 const LONG nLen = (LONG)g_currentNumber.size();
                 const LONG nS = (LONG)selEndBefore - nLen;
                 const LONG bL = std::max<LONG>(3, nLen);
-                SendMessage(hwnd, EM_SETSEL, (WPARAM)nS, (LPARAM)selEndBefore);
-                SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)bL, L'\u2500').c_str());
-                HideAnchorChars(hwnd, nS, bL);
-                mgr.ShiftObjectsAfter(selEndBefore, bL - nLen);
-                MathObject obj; obj.type = MathType::Fraction; obj.barStart = nS; obj.barLen = bL; obj.part1 = g_currentNumber;
-                objects.push_back(std::move(obj));
-                state.objectIndex = objects.size() - 1; if (!state.active) HideCaret(hwnd);
-                state.active = true; state.activePart = 2;
-                SendMessage(hwnd, EM_SETSEL, (WPARAM)(nS + bL), (LPARAM)(nS + bL));
-                InvalidateRect(hwnd, nullptr, TRUE); g_currentNumber.clear(); return 0;
+                {
+                    ScopedNoRedraw noRedraw(hwnd);
+                    SendMessage(hwnd, EM_SETSEL, (WPARAM)nS, (LPARAM)selEndBefore);
+                    SendMessage(hwnd, EM_REPLACESEL, (WPARAM)TRUE, (LPARAM)std::wstring((size_t)bL, L'\u2500').c_str());
+                    HideAnchorChars(hwnd, nS, bL);
+                    mgr.ShiftObjectsAfter(selEndBefore, bL - nLen);
+                    MathObject obj; obj.type = MathType::Fraction; obj.barStart = nS; obj.barLen = bL; obj.part1 = g_currentNumber;
+                    objects.push_back(std::move(obj));
+                    state.objectIndex = objects.size() - 1; if (!state.active) HideCaret(hwnd);
+                    state.active = true; state.activePart = 2;
+                    SendMessage(hwnd, EM_SETSEL, (WPARAM)(nS + bL), (LPARAM)(nS + bL));
+                }
+                RequestMathRepaint(hwnd); g_currentNumber.clear(); return 0;
             }
 
             if (ch >= L'0' && ch <= L'9') { g_currentNumber += ch; g_currentCommand.clear(); }
@@ -473,8 +635,10 @@ namespace
             else { g_currentNumber.clear(); g_currentCommand.clear(); }
 
             LRESULT res = CallWindowProc(g_originalProc, hwnd, uMsg, wParam, lParam);
-            mgr.ShiftObjectsAfter((LONG)selEndBefore, (LONG)GetWindowTextLengthW(hwnd) - lenBefore);
-            if (!objects.empty()) InvalidateRect(hwnd, nullptr, TRUE);
+            const LONG delta = (LONG)GetWindowTextLengthW(hwnd) - lenBefore;
+            const bool affectsObjects = (delta != 0) && HasObjectAtOrAfter(objects, (LONG)selEndBefore);
+            mgr.ShiftObjectsAfter((LONG)selEndBefore, delta);
+            if (affectsObjects) RequestMathRepaint(hwnd);
             return res;
         }
         }
@@ -491,7 +655,7 @@ bool InstallMathSupport(HWND hRichEdit)
     return !!g_originalProc;
 }
 
-void ResetMathSupport() { g_currentNumber.clear(); g_currentCommand.clear(); MathManager::Get().Clear(); if (g_hEdit) InvalidateRect(g_hEdit, nullptr, TRUE); }
+void ResetMathSupport() { g_currentNumber.clear(); g_currentCommand.clear(); MathManager::Get().Clear(); if (g_hEdit) RedrawWindow(g_hEdit, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE); }
 
 void InsertFormattedFraction(HWND hEdit, const std::wstring& numerator, const std::wstring& denominator)
 {
@@ -504,5 +668,5 @@ void InsertFormattedFraction(HWND hEdit, const std::wstring& numerator, const st
     MathManager::Get().GetObjects().push_back(std::move(obj));
     MathManager::Get().ShiftObjectsAfter((LONG)s + 1, bL - (LONG)(e - s));
     SendMessage(hEdit, EM_SETSEL, (WPARAM)(s + bL), (LPARAM)(s + bL));
-    InvalidateRect(hEdit, nullptr, TRUE);
+    RedrawWindow(hEdit, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
 }

@@ -9,6 +9,32 @@
 #include <algorithm>
 #include <cctype>
 
+namespace {
+    bool IsFactorStart(wchar_t ch)
+    {
+        return iswdigit(ch) || ch == L'.' || iswalpha(ch) || ch == L'(' || ch == L'{';
+    }
+
+    Rational DoubleToRational(double value)
+    {
+        return Rational((long long)llround(value * 1000000.0), 1000000);
+    }
+
+    bool TryApplyUnaryFunction(const std::wstring& name, double arg, double& out)
+    {
+        if (name == L"sin") { out = sin(arg); return true; }
+        if (name == L"cos") { out = cos(arg); return true; }
+        if (name == L"tan") { out = tan(arg); return true; }
+        if (name == L"asin") { if (arg < -1 || arg > 1) return false; out = asin(arg); return true; }
+        if (name == L"acos") { if (arg < -1 || arg > 1) return false; out = acos(arg); return true; }
+        if (name == L"atan") { out = atan(arg); return true; }
+        if (name == L"sqrt") { if (arg < 0) return false; out = sqrt(arg); return true; }
+        if (name == L"abs") { out = fabs(arg); return true; }
+        if (name == L"exp") { out = exp(arg); return true; }
+        return false;
+    }
+}
+
 double MathEvaluator::Eval(const std::wstring& e, const std::wstring& vName, double vVal)
 {
     expr = e; pos = 0; varName = vName; varValue_d = vVal;
@@ -42,6 +68,10 @@ double MathEvaluator::ParseTerm()
             pos++;
             double d = ParseFactor();
             if (d != 0) val /= d;
+        }
+        else if (IsFactorStart(expr[pos]))
+        {
+            val *= ParseFactor();
         }
         else break;
     }
@@ -90,9 +120,84 @@ double MathEvaluator::ParsePower()
         {
             name += expr[pos++];
         }
+
         if (!varName.empty() && name == varName) return varValue_d;
         if (name == L"pi") return 3.14159265358979;
         if (name == L"e") return 2.718281828459;
+        if (name == L"log" || name == L"ln")
+        {
+            SkipSpace();
+            double base = (name == L"ln") ? 2.718281828459 : 10.0;
+            // Check for explicit base: log_base(value) or log(base, value)
+            if (pos < expr.size() && expr[pos] == L'_')
+            {
+                pos++;
+                // Parse base as number or expression in braces
+                SkipSpace();
+                if (pos < expr.size() && expr[pos] == L'{')
+                {
+                    pos++;
+                    std::wstring baseExpr;
+                    int braceCount = 1;
+                    while (pos < expr.size() && braceCount > 0)
+                    {
+                        if (expr[pos] == L'{') braceCount++;
+                        else if (expr[pos] == L'}') braceCount--;
+                        if (braceCount > 0) baseExpr += expr[pos];
+                        pos++;
+                    }
+                    MathEvaluator subEval;
+                    base = subEval.Eval(baseExpr, varName, varValue_d);
+                }
+                else
+                {
+                    // Parse number
+                    std::wstring baseStr;
+                    while (pos < expr.size() && (iswdigit(expr[pos]) || expr[pos] == L'.'))
+                    {
+                        baseStr += expr[pos++];
+                    }
+                    base = _wtof(baseStr.c_str());
+                }
+                SkipSpace();
+            }
+            // Parse argument
+            SkipSpace();
+            if (pos < expr.size() && expr[pos] == L'(')
+            {
+                pos++;
+                double arg = ParseExpression();
+                SkipSpace();
+                if (pos < expr.size() && expr[pos] == L')') pos++;
+                if (arg > 0 && base > 0 && base != 1)
+                    return log(arg) / log(base);
+            }
+            else if (pos < expr.size() && expr[pos] == L'{')
+            {
+                pos++;
+                double arg = ParseExpression();
+                SkipSpace();
+                if (pos < expr.size() && expr[pos] == L'}') pos++;
+                if (arg > 0 && base > 0 && base != 1)
+                    return log(arg) / log(base);
+            }
+            return 0;
+        }
+
+        SkipSpace();
+        if (pos < expr.size() && (expr[pos] == L'(' || expr[pos] == L'{'))
+        {
+            wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+            pos++;
+            double arg = ParseExpression();
+            SkipSpace();
+            if (pos < expr.size() && expr[pos] == close) pos++;
+
+            double funcResult = 0;
+            if (TryApplyUnaryFunction(name, arg, funcResult))
+                return funcResult;
+            return 0;
+        }
     }
     return 0;
 }
@@ -130,6 +235,10 @@ Rational MathEvaluator::ParseTermRational()
             pos++;
             Rational d = ParseFactorRational();
             if (d.num != 0) val = val / d;
+        }
+        else if (IsFactorStart(expr[pos]))
+        {
+            val = val * ParseFactorRational();
         }
         else break;
     }
@@ -184,14 +293,12 @@ Rational MathEvaluator::ParsePowerRational()
     }
     if (expr[pos] == L'-') { pos++; return Rational(0) - ParsePowerRational(); }
 
-    if (iswdigit(expr[pos]))
+    if (iswdigit(expr[pos]) || expr[pos] == L'.')
     {
         wchar_t* end;
         double val = wcstod(&expr[pos], &end);
         pos = (size_t)(end - expr.c_str());
-        // Convert to rational by multiplying by a power of 10 to eliminate decimals
-        long long int_val = (long long)(val * 1000000);  // 6 decimal places precision
-        return Rational(int_val, 1000000);
+        return DoubleToRational(val);
     }
 
     if (iswalpha(expr[pos]))
@@ -204,6 +311,71 @@ Rational MathEvaluator::ParsePowerRational()
         if (!varName.empty() && name == varName) return varValue_r;
         if (name == L"pi") return Rational(3141592, 1000000);  // Approximation of pi
         if (name == L"e") return Rational(2718281, 1000000);  // Approximation of e
+
+        if (name == L"log" || name == L"ln")
+        {
+            SkipSpace();
+            double base = (name == L"ln") ? 2.718281828459 : 10.0;
+
+            if (pos < expr.size() && expr[pos] == L'_')
+            {
+                pos++;
+                SkipSpace();
+                if (pos < expr.size() && expr[pos] == L'{')
+                {
+                    pos++;
+                    std::wstring baseExpr;
+                    int braceCount = 1;
+                    while (pos < expr.size() && braceCount > 0)
+                    {
+                        if (expr[pos] == L'{') braceCount++;
+                        else if (expr[pos] == L'}') braceCount--;
+                        if (braceCount > 0) baseExpr += expr[pos];
+                        pos++;
+                    }
+                    MathEvaluator subEval;
+                    base = subEval.EvalRational(baseExpr, varName, varValue_r).toDouble();
+                }
+                else
+                {
+                    std::wstring baseStr;
+                    while (pos < expr.size() && (iswdigit(expr[pos]) || expr[pos] == L'.'))
+                    {
+                        baseStr += expr[pos++];
+                    }
+                    base = _wtof(baseStr.c_str());
+                }
+                SkipSpace();
+            }
+
+            SkipSpace();
+            if (pos < expr.size() && (expr[pos] == L'(' || expr[pos] == L'{'))
+            {
+                wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+                pos++;
+                double arg = ParseExpressionRational().toDouble();
+                SkipSpace();
+                if (pos < expr.size() && expr[pos] == close) pos++;
+                if (arg > 0 && base > 0 && base != 1)
+                    return DoubleToRational(log(arg) / log(base));
+            }
+            return Rational(0);
+        }
+
+        SkipSpace();
+        if (pos < expr.size() && (expr[pos] == L'(' || expr[pos] == L'{'))
+        {
+            wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+            pos++;
+            double arg = ParseExpressionRational().toDouble();
+            SkipSpace();
+            if (pos < expr.size() && expr[pos] == close) pos++;
+
+            double funcResult = 0;
+            if (TryApplyUnaryFunction(name, arg, funcResult))
+                return DoubleToRational(funcResult);
+            return Rational(0);
+        }
     }
     return Rational(0);
 }

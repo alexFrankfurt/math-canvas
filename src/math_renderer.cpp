@@ -108,7 +108,8 @@ void MathRenderer::Draw(HWND hEdit, HDC hdc, const MathObject& obj, size_t objIn
     // but the renderScale picks up that 2x width too. Compensate so drawn
     // content stays at the correct size relative to zoom.
     if (obj.type == MathType::Summation || obj.type == MathType::Integral
-        || obj.type == MathType::SystemOfEquations)
+        || obj.type == MathType::SystemOfEquations || obj.type == MathType::Power
+        || obj.type == MathType::Logarithm)
         renderScale *= 0.5;
     HFONT renderBaseFont = CreateScaledFont(baseFont, renderScale, 100);
     HFONT limitFont = CreateScaledFont(baseFont, renderScale, 70);
@@ -492,6 +493,157 @@ void MathRenderer::Draw(HWND hEdit, HDC hdc, const MathObject& obj, size_t objIn
             DeleteObject(boldFont);
         }
     }
+    else if (obj.type == MathType::AbsoluteValue)
+    {
+        // Measure the expression text to determine bar size
+        SelectObject(hdc, renderBaseFont);
+        TEXTMETRICW tmExpr = {};
+        GetTextMetricsW(hdc, &tmExpr);
+
+        // Get expression text size (part1 is the expression inside bars)
+        SIZE exprSz = {};
+        const wchar_t* exprText = obj.part1.empty() ? L"?" : obj.part1.c_str();
+        int exprLen = obj.part1.empty() ? 1 : (int)obj.part1.size();
+        GetTextExtentPoint32W(hdc, exprText, exprLen, &exprSz);
+
+        // Layout constants
+        const int pad = (std::max)(2, (int)(tmBase.tmHeight / 6));
+        const int barExtend = (std::max)(3, (int)(tmBase.tmHeight / 5));  // how far bars extend above/below text
+        const int penWidth = (std::max)(2, (int)(1.8 * renderScale));
+
+        // Vertical extents of the bars
+        int barTop = yMid - tmExpr.tmAscent - barExtend;
+        int barBot = yMid + tmExpr.tmDescent + barExtend;
+
+        // X positions
+        int xLeftBar = ptStart.x + pad;
+        int xExprStart = xLeftBar + pad + penWidth;
+        int xRightBar = xExprStart + exprSz.cx + pad;
+        int xEnd = xRightBar + penWidth + pad;
+
+        // Draw the left vertical bar
+        HPEN hPen = CreatePen(PS_SOLID, penWidth, normalColor);
+        HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
+
+        MoveToEx(hdc, xLeftBar, barTop, NULL);
+        LineTo(hdc, xLeftBar, barBot);
+
+        // Draw the right vertical bar
+        MoveToEx(hdc, xRightBar, barTop, NULL);
+        LineTo(hdc, xRightBar, barBot);
+
+        SelectObject(hdc, oldPen);
+        DeleteObject(hPen);
+
+        // Draw the expression between the bars
+        SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+        SelectObject(hdc, renderBaseFont);
+        DrawPart(obj.part1, xExprStart, yMid, 1);
+
+        // Draw result right after the right bar if present
+        if (!obj.resultText.empty()) {
+            SetTextColor(hdc, activeColor);
+            HFONT boldFont = CreateScaledFont(baseFont, renderScale, 100);
+            LOGFONTW lfB = {}; GetObjectW(boldFont, sizeof(lfB), &lfB);
+            lfB.lfWeight = FW_BOLD;
+            DeleteObject(boldFont);
+            boldFont = CreateFontIndirectW(&lfB);
+            HFONT prevF = (HFONT)SelectObject(hdc, boldFont);
+            TextOutW(hdc, xEnd + 4, yMid, obj.resultText.c_str(), (int)obj.resultText.size());
+            SelectObject(hdc, prevF);
+            DeleteObject(boldFont);
+        }
+    }
+    else if (obj.type == MathType::Power)
+    {
+        SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+        SelectObject(hdc, renderBaseFont);
+
+        SIZE baseSz = {};
+        const wchar_t* baseText = obj.part1.empty() ? L"?" : obj.part1.c_str();
+        int baseLen = obj.part1.empty() ? 1 : (int)obj.part1.size();
+        GetTextExtentPoint32W(hdc, baseText, baseLen, &baseSz);
+
+        int xBase = ptStart.x + 2;
+        int yBase = yMid;
+        DrawPart(obj.part1, xBase, yBase, 1);
+
+        SelectObject(hdc, limitFont);
+        TEXTMETRICW tmExp = {};
+        GetTextMetricsW(hdc, &tmExp);
+
+        SIZE expSz = {};
+        const wchar_t* expText = obj.part2.empty() ? L"?" : obj.part2.c_str();
+        int expLen = obj.part2.empty() ? 1 : (int)obj.part2.size();
+        GetTextExtentPoint32W(hdc, expText, expLen, &expSz);
+
+        int xExp = xBase + baseSz.cx + 2;
+        int yExp = yBase - (tmBase.tmAscent / 2);
+        DrawPart(obj.part2, xExp, yExp, 2);
+
+        if (!obj.resultText.empty()) {
+            SetTextColor(hdc, activeColor);
+            HFONT boldFont = CreateScaledFont(baseFont, renderScale, 100);
+            LOGFONTW lfB = {}; GetObjectW(boldFont, sizeof(lfB), &lfB);
+            lfB.lfWeight = FW_BOLD;
+            DeleteObject(boldFont);
+            boldFont = CreateFontIndirectW(&lfB);
+            HFONT prevF = (HFONT)SelectObject(hdc, boldFont);
+            TextOutW(hdc, xExp + expSz.cx + 8, yBase, obj.resultText.c_str(), (int)obj.resultText.size());
+            SelectObject(hdc, prevF);
+            DeleteObject(boldFont);
+        }
+    }
+    else if (obj.type == MathType::Logarithm)
+    {
+        SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+        SelectObject(hdc, renderBaseFont);
+
+        // Draw "log" text
+        const wchar_t* logText = L"log";
+        SIZE logSz = {};
+        GetTextExtentPoint32W(hdc, logText, 3, &logSz);
+        int xLog = ptStart.x + 2;
+        int yLog = yMid;
+        SetTextColor(hdc, normalColor);
+        TextOutW(hdc, xLog, yLog, logText, 3);
+
+        // Draw base as subscript (part1)
+        SelectObject(hdc, limitFont);
+        TEXTMETRICW tmSub = {};
+        GetTextMetricsW(hdc, &tmSub);
+
+        SIZE baseSz = {};
+        const wchar_t* baseText = obj.part1.empty() ? L"?" : obj.part1.c_str();
+        int baseLen = obj.part1.empty() ? 1 : (int)obj.part1.size();
+        GetTextExtentPoint32W(hdc, baseText, baseLen, &baseSz);
+
+        int xBase = xLog + logSz.cx + 1;
+        int yBase = yLog + (tmBase.tmDescent / 2);  // Subscript position
+        DrawPart(obj.part1, xBase, yBase, 1);
+
+        // Draw argument (part2) after the base
+        SelectObject(hdc, renderBaseFont);
+        int xArg = xBase + baseSz.cx + 2;
+        DrawPart(obj.part2, xArg, yMid, 2);
+
+        // Draw result if present
+        if (!obj.resultText.empty()) {
+            SIZE argSz = {};
+            GetTextExtentPoint32W(hdc, obj.part2.empty() ? L"?" : obj.part2.c_str(), 
+                                  obj.part2.empty() ? 1 : (int)obj.part2.size(), &argSz);
+            SetTextColor(hdc, activeColor);
+            HFONT boldFont = CreateScaledFont(baseFont, renderScale, 100);
+            LOGFONTW lfB = {}; GetObjectW(boldFont, sizeof(lfB), &lfB);
+            lfB.lfWeight = FW_BOLD;
+            DeleteObject(boldFont);
+            boldFont = CreateFontIndirectW(&lfB);
+            HFONT prevF = (HFONT)SelectObject(hdc, boldFont);
+            TextOutW(hdc, xArg + argSz.cx + 6, yMid, obj.resultText.c_str(), (int)obj.resultText.size());
+            SelectObject(hdc, prevF);
+            DeleteObject(boldFont);
+        }
+    }
     RestoreDC(hdc, saved);
     DeleteObject(renderBaseFont); DeleteObject(limitFont);
 }
@@ -617,6 +769,87 @@ bool MathRenderer::GetHitPart(HWND hEdit, HDC hdc, POINT ptMouse, size_t* outInd
             // Hit area covers the entire radical expression area
             RECT rcExpr = { ptS.x, radTop - 5, xExprStart + sz.cx + pad + 10, yM + tmExpr.tmDescent + pad + 5 };
             if (Check(rcExpr, 1)) hit = true;
+        }
+        else if (obj.type == MathType::AbsoluteValue)
+        {
+            SelectObject(hdc, baseRF);
+            TEXTMETRICW tmExpr = {};
+            GetTextMetricsW(hdc, &tmExpr);
+
+            SIZE sz = {};
+            GetTextExtentPoint32W(hdc, obj.part1.empty() ? L"?" : obj.part1.c_str(), (int)std::max<size_t>(1, obj.part1.size()), &sz);
+
+            int pad = std::max<int>(2, (int)(tmB.tmHeight / 6));
+            int barExtend = std::max<int>(3, (int)(tmB.tmHeight / 5));
+            int barTop = yM - tmExpr.tmAscent - barExtend;
+            int barBot = yM + tmExpr.tmDescent + barExtend;
+            int xLeftBar = ptS.x + pad;
+            int xRightBar = xLeftBar + pad + 2 + sz.cx + pad;
+
+            // Hit area covers the entire absolute value area
+            RECT rcExpr = { xLeftBar - 5, barTop - 5, xRightBar + 10, barBot + 5 };
+            if (Check(rcExpr, 1)) hit = true;
+        }
+        else if (obj.type == MathType::Power)
+        {
+            SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+            SelectObject(hdc, baseRF);
+
+            SIZE baseSz = {};
+            GetTextExtentPoint32W(hdc, obj.part1.empty() ? L"?" : obj.part1.c_str(), (int)std::max<size_t>(1, obj.part1.size()), &baseSz);
+            int xBase = ptS.x + 2;
+            int yBase = yM;
+
+            RECT rcBase = { xBase - 5, yBase - tmB.tmAscent - 5, xBase + baseSz.cx + 8, yBase + tmB.tmDescent + 5 };
+            if (Check(rcBase, 1)) hit = true;
+
+            if (!hit) {
+                SelectObject(hdc, limitF);
+                TEXTMETRICW tmExp = {};
+                GetTextMetricsW(hdc, &tmExp);
+
+                SIZE expSz = {};
+                GetTextExtentPoint32W(hdc, obj.part2.empty() ? L"?" : obj.part2.c_str(), (int)std::max<size_t>(1, obj.part2.size()), &expSz);
+                int xExp = xBase + baseSz.cx + 2;
+                int yExp = yBase - (tmB.tmAscent / 2);
+
+                RECT rcExp = { xExp - 4, yExp - tmExp.tmAscent - 4, xExp + expSz.cx + 6, yExp + tmExp.tmDescent + 4 };
+                if (Check(rcExp, 2)) hit = true;
+            }
+        }
+        else if (obj.type == MathType::Logarithm)
+        {
+            SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
+            SelectObject(hdc, baseRF);
+
+            // "log" text size
+            SIZE logSz = {};
+            GetTextExtentPoint32W(hdc, L"log", 3, &logSz);
+            int xLog = ptS.x + 2;
+
+            // Base subscript hit area
+            SelectObject(hdc, limitF);
+            TEXTMETRICW tmSub = {};
+            GetTextMetricsW(hdc, &tmSub);
+
+            SIZE baseSz = {};
+            GetTextExtentPoint32W(hdc, obj.part1.empty() ? L"?" : obj.part1.c_str(), (int)std::max<size_t>(1, obj.part1.size()), &baseSz);
+            int xBase = xLog + logSz.cx + 1;
+            int yBase = yM + (tmB.tmDescent / 2);
+
+            RECT rcBase = { xBase - 2, yBase - tmSub.tmAscent - 2, xBase + baseSz.cx + 4, yBase + tmSub.tmDescent + 2 };
+            if (Check(rcBase, 1)) hit = true;
+
+            // Argument hit area
+            if (!hit) {
+                SelectObject(hdc, baseRF);
+                SIZE argSz = {};
+                GetTextExtentPoint32W(hdc, obj.part2.empty() ? L"?" : obj.part2.c_str(), (int)std::max<size_t>(1, obj.part2.size()), &argSz);
+                int xArg = xBase + baseSz.cx + 2;
+
+                RECT rcArg = { xArg - 4, yM - tmB.tmAscent - 4, xArg + argSz.cx + 8, yM + tmB.tmDescent + 4 };
+                if (Check(rcArg, 2)) hit = true;
+            }
         }
         SelectObject(hdc, old); DeleteObject(baseRF); DeleteObject(limitF);
         if (hit) return true;

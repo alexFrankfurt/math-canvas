@@ -175,7 +175,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     g_hRichEdit = CreateWindowEx(
         WS_EX_CLIENTEDGE,
         richEditClass,
-        L"Type your text here...\n\nTwo-dimensional fraction feature:\n- Type a number, then '/' to create a fraction\n- Example: Type '3' then '/' becomes 3 over a line\n- Then type '4' to complete 3/4\n\nClick 'Clear Text' to reset.",
+        L"Type your text here...\n\nMath features:\n- Type a number, then '/' to create a fraction\n- Type \\sqrt then Space to insert square root\n- Type \\abs then Space to insert absolute value\n- Type \\pow then Space to insert power (base^exponent)\n\nClick 'Clear Text' to reset.",
         WS_VISIBLE | WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL | ES_WANTRETURN,
         10, 100, 760, 450,
         hwnd,

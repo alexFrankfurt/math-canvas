@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-enum class MathType { Fraction, Summation, Integral, SystemOfEquations, SquareRoot };
+enum class MathType { Fraction, Summation, Integral, SystemOfEquations, SquareRoot, AbsoluteValue, Power, Logarithm };
 
 struct MathObject
 {

@@ -10,7 +10,11 @@ public:
     static MathManager& Get() { static MathManager instance; return instance; }
 
     std::vector<MathObject>& GetObjects() { return m_objects; }
-    MathTypingState& GetState() { return m_state; }
+/**
+ * Get the current state of the math typing functionality
+ * @return Reference to the current MathTypingState object
+ */
+    MathTypingState& GetState() { return m_state; } // Return reference to the math typing state
 
     void Clear() { m_objects.clear(); m_state = {}; }
     

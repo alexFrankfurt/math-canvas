@@ -112,6 +112,31 @@ double MathManager::CalculateResult(const MathObject& obj)
         }
     return sum * dx;
     }
+    else if (obj.type == MathType::AbsoluteValue)
+    {
+        double val = eval.Eval(obj.part1);
+        return fabs(val);
+    }
+    else if (obj.type == MathType::Power)
+    {
+        double base = eval.Eval(obj.part1);
+        double exponent = eval.Eval(obj.part2);
+        return pow(base, exponent);
+    }
+    else if (obj.type == MathType::Logarithm)
+    {
+        double arg = eval.Eval(obj.part2);
+        if (arg <= 0) return 0;  // Invalid argument
+        
+        // part1 is the base (default 10)
+        double base = 10.0;
+        if (!obj.part1.empty()) {
+            base = eval.Eval(obj.part1);
+        }
+        if (base <= 0 || base == 1) return 0;  // Invalid base
+        
+        return log(arg) / log(base);
+    }
     return 0;
 }
 
