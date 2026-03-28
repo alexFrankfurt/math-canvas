@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math_evaluator.h"
 #include "math_types.h"
 #include <vector>
 #include <string>
@@ -21,8 +22,13 @@ public:
     void ShiftObjectsAfter(LONG atPosInclusive, LONG delta);
     void DeleteObjectsInRange(LONG start, LONG end);
     bool IsPosInsideAnyObject(LONG pos, size_t* outIndex = nullptr);
-    double CalculateResult(const MathObject& obj);
+    bool CanCalculateResult(const MathObject& obj) const;
+    MathValue CalculateValueResult(const MathObject& obj) const;
+    double CalculateResult(const MathObject& obj) const;
     std::wstring CalculateSystemResult(const MathObject& obj);
+    std::wstring CalculateFormattedResult(const MathObject& obj) const;
+    std::wstring FormatNumericResult(double value) const;
+    std::wstring FormatValueResult(const MathValue& value) const;
 
 private:
     MathManager() = default;

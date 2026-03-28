@@ -4,6 +4,76 @@
 #include <vector>
 #include <map>
 
+struct UnitDimension {
+    int length = 0;
+    int mass = 0;
+    int time = 0;
+    int current = 0;
+    int temperature = 0;
+    int amount = 0;
+    int luminousIntensity = 0;
+
+    bool IsDimensionless() const {
+        return length == 0 && mass == 0 && time == 0 && current == 0 &&
+               temperature == 0 && amount == 0 && luminousIntensity == 0;
+    }
+
+    bool operator==(const UnitDimension& other) const {
+        return length == other.length && mass == other.mass && time == other.time &&
+               current == other.current && temperature == other.temperature &&
+               amount == other.amount && luminousIntensity == other.luminousIntensity;
+    }
+
+    bool operator!=(const UnitDimension& other) const {
+        return !(*this == other);
+    }
+};
+
+struct MathValue {
+    double baseValue = 0.0;
+    UnitDimension dimension = {};
+    double displayScale = 1.0;
+    std::wstring displayUnit;
+    std::wstring errorText;
+
+    static MathValue Scalar(double value) {
+        MathValue result;
+        result.baseValue = value;
+        return result;
+    }
+
+    static MathValue Quantity(double value, const UnitDimension& dim, double scale, const std::wstring& unit) {
+        MathValue result;
+        result.baseValue = value;
+        result.dimension = dim;
+        result.displayScale = scale;
+        result.displayUnit = unit;
+        return result;
+    }
+
+    static MathValue Error(const std::wstring& message) {
+        MathValue result;
+        result.errorText = message;
+        return result;
+    }
+
+    bool IsError() const {
+        return !errorText.empty();
+    }
+
+    bool IsDimensionless() const {
+        return dimension.IsDimensionless();
+    }
+
+    bool HasDisplayUnit() const {
+        return !displayUnit.empty();
+    }
+};
+
+std::wstring BuildCanonicalUnitSymbol(const UnitDimension& dimension);
+const std::vector<std::wstring>& GetKnownUnitSymbols();
+std::vector<std::wstring> FindMatchingUnitSymbols(const std::wstring& prefix);
+
 // Rational number class for exact arithmetic
 class Rational {
 public:
@@ -62,6 +132,7 @@ class MathEvaluator
 public:
     // Double-based evaluation methods
     double Eval(const std::wstring& expr, const std::wstring& varName = L"", double varValue = 0);
+    MathValue EvalValue(const std::wstring& expr, const std::wstring& varName = L"", const MathValue& varValue = MathValue::Scalar(0.0));
     std::map<std::wstring, double> SolveSystemOfEquations(const std::vector<std::wstring>& equations);
 
     // Rational-based evaluation methods
@@ -75,6 +146,9 @@ private:
     
     // Double-based parsing members
     double varValue_d = 0;
+
+    // Quantity-based parsing members
+    MathValue varValue_q;
     
     // Rational-based parsing members  
     Rational varValue_r;
@@ -84,6 +158,11 @@ private:
     double ParseTerm();
     double ParseFactor();
     double ParsePower();
+
+    MathValue ParseValueExpression();
+    MathValue ParseValueTerm();
+    MathValue ParseValueFactor();
+    MathValue ParseValuePower();
     
     // Rational-based parsing methods
     Rational ParseExpressionRational();

@@ -10,9 +10,325 @@
 #include <cctype>
 
 namespace {
+    constexpr double kPiValue = 3.14159265358979323846;
+    constexpr double kEValue = 2.71828182845904523536;
+
+    bool TryApplyUnaryFunction(const std::wstring& name, double arg, double& out);
+
     bool IsFactorStart(wchar_t ch)
     {
         return iswdigit(ch) || ch == L'.' || iswalpha(ch) || ch == L'(' || ch == L'{';
+    }
+
+    UnitDimension MakeDimension(int length = 0,
+                                int mass = 0,
+                                int time = 0,
+                                int current = 0,
+                                int temperature = 0,
+                                int amount = 0,
+                                int luminousIntensity = 0)
+    {
+        UnitDimension dimension;
+        dimension.length = length;
+        dimension.mass = mass;
+        dimension.time = time;
+        dimension.current = current;
+        dimension.temperature = temperature;
+        dimension.amount = amount;
+        dimension.luminousIntensity = luminousIntensity;
+        return dimension;
+    }
+
+    struct UnitDefinition
+    {
+        const wchar_t* symbol;
+        double scale;
+        UnitDimension dimension;
+    };
+
+    const UnitDefinition kUnitDefinitions[] = {
+        { L"m", 1.0, MakeDimension(1) },
+        { L"cm", 0.01, MakeDimension(1) },
+        { L"mm", 0.001, MakeDimension(1) },
+        { L"km", 1000.0, MakeDimension(1) },
+        { L"s", 1.0, MakeDimension(0, 0, 1) },
+        { L"ms", 0.001, MakeDimension(0, 0, 1) },
+        { L"min", 60.0, MakeDimension(0, 0, 1) },
+        { L"h", 3600.0, MakeDimension(0, 0, 1) },
+        { L"hr", 3600.0, MakeDimension(0, 0, 1) },
+        { L"kg", 1.0, MakeDimension(0, 1) },
+        { L"g", 0.001, MakeDimension(0, 1) },
+        { L"A", 1.0, MakeDimension(0, 0, 0, 1) },
+        { L"K", 1.0, MakeDimension(0, 0, 0, 0, 1) },
+        { L"mol", 1.0, MakeDimension(0, 0, 0, 0, 0, 1) },
+        { L"cd", 1.0, MakeDimension(0, 0, 0, 0, 0, 0, 1) },
+        { L"Hz", 1.0, MakeDimension(0, 0, -1) },
+        { L"N", 1.0, MakeDimension(1, 1, -2) },
+        { L"Pa", 1.0, MakeDimension(-1, 1, -2) },
+        { L"J", 1.0, MakeDimension(2, 1, -2) },
+        { L"W", 1.0, MakeDimension(2, 1, -3) },
+    };
+
+    const UnitDefinition* FindUnitDefinition(const std::wstring& name)
+    {
+        for (const auto& definition : kUnitDefinitions)
+        {
+            if (name == definition.symbol)
+                return &definition;
+        }
+        return nullptr;
+    }
+
+    std::wstring LowercaseCopy(const std::wstring& text)
+    {
+        std::wstring lowered = text;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return (wchar_t)towlower(ch);
+        });
+        return lowered;
+    }
+
+    bool NearlyEqual(double left, double right, double epsilon = 1e-9)
+    {
+        return std::fabs(left - right) <= epsilon;
+    }
+
+    bool IsIntegerLike(double value)
+    {
+        return NearlyEqual(value, std::round(value));
+    }
+
+    void AddDimension(UnitDimension& target, const UnitDimension& source, int sign)
+    {
+        target.length += source.length * sign;
+        target.mass += source.mass * sign;
+        target.time += source.time * sign;
+        target.current += source.current * sign;
+        target.temperature += source.temperature * sign;
+        target.amount += source.amount * sign;
+        target.luminousIntensity += source.luminousIntensity * sign;
+    }
+
+    bool TryScaleDimension(const UnitDimension& source, double scale, UnitDimension& outDimension)
+    {
+        auto scaleComponent = [scale](int component, int& outComponent) -> bool {
+            const double scaled = component * scale;
+            const double rounded = std::round(scaled);
+            if (!NearlyEqual(scaled, rounded))
+                return false;
+            outComponent = (int)rounded;
+            return true;
+        };
+
+        return scaleComponent(source.length, outDimension.length) &&
+               scaleComponent(source.mass, outDimension.mass) &&
+               scaleComponent(source.time, outDimension.time) &&
+               scaleComponent(source.current, outDimension.current) &&
+               scaleComponent(source.temperature, outDimension.temperature) &&
+               scaleComponent(source.amount, outDimension.amount) &&
+               scaleComponent(source.luminousIntensity, outDimension.luminousIntensity);
+    }
+
+    std::wstring BuildDimensionUnitSymbol(const UnitDimension& dimension)
+    {
+        if (dimension.IsDimensionless())
+            return L"";
+
+        if (dimension == MakeDimension(0, 0, -1)) return L"Hz";
+        if (dimension == MakeDimension(1, 1, -2)) return L"N";
+        if (dimension == MakeDimension(-1, 1, -2)) return L"Pa";
+        if (dimension == MakeDimension(2, 1, -2)) return L"J";
+        if (dimension == MakeDimension(2, 1, -3)) return L"W";
+
+        std::vector<std::wstring> numerator;
+        std::vector<std::wstring> denominator;
+
+        auto appendPart = [](std::vector<std::wstring>& parts, const wchar_t* symbol, int exponent) {
+            if (exponent == 0)
+                return;
+
+            const int magnitude = std::abs(exponent);
+            std::wstring part = symbol;
+            if (magnitude != 1)
+                part += L"^" + std::to_wstring(magnitude);
+            parts.push_back(std::move(part));
+        };
+
+        auto appendSignedPart = [&appendPart, &numerator, &denominator](const wchar_t* symbol, int exponent) {
+            if (exponent > 0)
+                appendPart(numerator, symbol, exponent);
+            else if (exponent < 0)
+                appendPart(denominator, symbol, exponent);
+        };
+
+        appendSignedPart(L"m", dimension.length);
+        appendSignedPart(L"kg", dimension.mass);
+        appendSignedPart(L"s", dimension.time);
+        appendSignedPart(L"A", dimension.current);
+        appendSignedPart(L"K", dimension.temperature);
+        appendSignedPart(L"mol", dimension.amount);
+        appendSignedPart(L"cd", dimension.luminousIntensity);
+
+        auto joinParts = [](const std::vector<std::wstring>& parts) {
+            std::wstring text;
+            for (size_t index = 0; index < parts.size(); ++index)
+            {
+                if (index != 0)
+                    text += L"*";
+                text += parts[index];
+            }
+            return text;
+        };
+
+        if (numerator.empty())
+            numerator.push_back(L"1");
+
+        std::wstring symbol = joinParts(numerator);
+        if (!denominator.empty())
+            symbol += L"/" + joinParts(denominator);
+        return symbol;
+    }
+
+    MathValue WithDisplayUnit(MathValue value)
+    {
+        if (value.IsError())
+            return value;
+
+        if (value.IsDimensionless())
+        {
+            value.displayScale = 1.0;
+            value.displayUnit.clear();
+            return value;
+        }
+
+        if (value.displayUnit.empty())
+        {
+            value.displayUnit = BuildDimensionUnitSymbol(value.dimension);
+            value.displayScale = 1.0;
+        }
+        return value;
+    }
+
+    MathValue AddValues(const MathValue& left, const MathValue& right, bool subtract = false)
+    {
+        if (left.IsError()) return left;
+        if (right.IsError()) return right;
+        if (left.dimension != right.dimension)
+            return MathValue::Error(L"incompatible units");
+
+        MathValue result = MathValue::Scalar(left.baseValue + (subtract ? -right.baseValue : right.baseValue));
+        result.dimension = left.dimension;
+        if (!left.IsDimensionless())
+        {
+            if (left.HasDisplayUnit())
+            {
+                result.displayUnit = left.displayUnit;
+                result.displayScale = left.displayScale;
+            }
+            else if (right.HasDisplayUnit())
+            {
+                result.displayUnit = right.displayUnit;
+                result.displayScale = right.displayScale;
+            }
+        }
+        return WithDisplayUnit(result);
+    }
+
+    MathValue MultiplyValues(const MathValue& left, const MathValue& right)
+    {
+        if (left.IsError()) return left;
+        if (right.IsError()) return right;
+
+        MathValue result = MathValue::Scalar(left.baseValue * right.baseValue);
+        result.dimension = left.dimension;
+        AddDimension(result.dimension, right.dimension, 1);
+
+        if (!result.IsDimensionless())
+        {
+            if (left.IsDimensionless() && right.HasDisplayUnit())
+            {
+                result.displayUnit = right.displayUnit;
+                result.displayScale = right.displayScale;
+            }
+            else if (right.IsDimensionless() && left.HasDisplayUnit())
+            {
+                result.displayUnit = left.displayUnit;
+                result.displayScale = left.displayScale;
+            }
+        }
+
+        return WithDisplayUnit(result);
+    }
+
+    MathValue DivideValues(const MathValue& numerator, const MathValue& denominator)
+    {
+        if (numerator.IsError()) return numerator;
+        if (denominator.IsError()) return denominator;
+        if (!std::isfinite(denominator.baseValue) || std::fabs(denominator.baseValue) < 1e-12)
+            return MathValue::Error(L"undefined");
+
+        MathValue result = MathValue::Scalar(numerator.baseValue / denominator.baseValue);
+        result.dimension = numerator.dimension;
+        AddDimension(result.dimension, denominator.dimension, -1);
+
+        if (!result.IsDimensionless() && denominator.IsDimensionless() && numerator.HasDisplayUnit())
+        {
+            result.displayUnit = numerator.displayUnit;
+            result.displayScale = numerator.displayScale;
+        }
+
+        return WithDisplayUnit(result);
+    }
+
+    MathValue PowerValue(const MathValue& base, const MathValue& exponent)
+    {
+        if (base.IsError()) return base;
+        if (exponent.IsError()) return exponent;
+        if (!exponent.IsDimensionless())
+            return MathValue::Error(L"invalid unit exponent");
+
+        const double power = exponent.baseValue;
+        if (!std::isfinite(base.baseValue) || !std::isfinite(power))
+            return MathValue::Error(L"undefined");
+        if (base.baseValue < 0 && !IsIntegerLike(power))
+            return MathValue::Error(L"undefined");
+
+        MathValue result = MathValue::Scalar(std::pow(base.baseValue, power));
+        if (!base.IsDimensionless())
+        {
+            if (!TryScaleDimension(base.dimension, power, result.dimension))
+                return MathValue::Error(L"invalid unit exponent");
+        }
+
+        return WithDisplayUnit(result);
+    }
+
+    MathValue ApplyUnaryValueFunction(const std::wstring& name, const MathValue& argument)
+    {
+        if (argument.IsError())
+            return argument;
+
+        if (name == L"sqrt")
+            return PowerValue(argument, MathValue::Scalar(0.5));
+
+        if (name == L"abs")
+        {
+            MathValue result = argument;
+            result.baseValue = std::fabs(result.baseValue);
+            return WithDisplayUnit(result);
+        }
+
+        if (!argument.IsDimensionless())
+        {
+            if (name == L"exp")
+                return MathValue::Error(L"exp requires abstract number");
+            return MathValue::Error(L"function requires abstract number");
+        }
+
+        double resultValue = 0;
+        if (!TryApplyUnaryFunction(name, argument.baseValue, resultValue))
+            return MathValue::Error(L"undefined");
+        return MathValue::Scalar(resultValue);
     }
 
     Rational DoubleToRational(double value)
@@ -39,6 +355,67 @@ double MathEvaluator::Eval(const std::wstring& e, const std::wstring& vName, dou
 {
     expr = e; pos = 0; varName = vName; varValue_d = vVal;
     try { return ParseExpression(); } catch (...) { return 0; }
+}
+
+const std::vector<std::wstring>& GetKnownUnitSymbols()
+{
+    static const std::vector<std::wstring> symbols = []() {
+        std::vector<std::wstring> result;
+        result.reserve(sizeof(kUnitDefinitions) / sizeof(kUnitDefinitions[0]));
+        for (const auto& definition : kUnitDefinitions)
+            result.emplace_back(definition.symbol);
+        return result;
+    }();
+    return symbols;
+}
+
+std::vector<std::wstring> FindMatchingUnitSymbols(const std::wstring& prefix)
+{
+    const std::wstring loweredPrefix = LowercaseCopy(prefix);
+    std::vector<std::wstring> matches;
+    for (const auto& symbol : GetKnownUnitSymbols())
+    {
+        if (loweredPrefix.empty())
+        {
+            matches.push_back(symbol);
+            continue;
+        }
+
+        const std::wstring loweredSymbol = LowercaseCopy(symbol);
+        if (loweredSymbol.compare(0, loweredPrefix.size(), loweredPrefix) == 0)
+            matches.push_back(symbol);
+    }
+    return matches;
+}
+
+MathValue MathEvaluator::EvalValue(const std::wstring& e, const std::wstring& vName, const MathValue& vVal)
+{
+    expr = e;
+    pos = 0;
+    varName = vName;
+    varValue_q = vVal;
+
+    try
+    {
+        MathValue value = ParseValueExpression();
+        SkipSpace();
+        if (value.IsError())
+            return value;
+        if (pos != expr.size())
+            return MathValue::Error(L"invalid expression");
+        if (!std::isfinite(value.baseValue))
+            return MathValue::Error(L"undefined");
+        return value;
+    }
+    catch (...)
+    {
+        return MathValue::Error(L"invalid expression");
+    }
+}
+
+std::wstring BuildCanonicalUnitSymbol(const UnitDimension& dimension)
+{
+    return BuildDimensionUnitSymbol(dimension);
 }
 
 double MathEvaluator::ParseExpression()
@@ -200,6 +577,182 @@ double MathEvaluator::ParsePower()
         }
     }
     return 0;
+}
+
+MathValue MathEvaluator::ParseValueExpression()
+{
+    MathValue value = ParseValueTerm();
+    while (true)
+    {
+        SkipSpace();
+        if (pos >= expr.size())
+            break;
+        if (expr[pos] == L'+')
+        {
+            ++pos;
+            value = AddValues(value, ParseValueTerm(), false);
+        }
+        else if (expr[pos] == L'-')
+        {
+            ++pos;
+            value = AddValues(value, ParseValueTerm(), true);
+        }
+        else
+        {
+            break;
+        }
+    }
+    return value;
+}
+
+MathValue MathEvaluator::ParseValueTerm()
+{
+    MathValue value = ParseValueFactor();
+    while (true)
+    {
+        SkipSpace();
+        if (pos >= expr.size())
+            break;
+
+        if (expr[pos] == L'*')
+        {
+            ++pos;
+            value = MultiplyValues(value, ParseValueFactor());
+        }
+        else if (expr[pos] == L'/')
+        {
+            ++pos;
+            value = DivideValues(value, ParseValueFactor());
+        }
+        else if (IsFactorStart(expr[pos]))
+        {
+            value = MultiplyValues(value, ParseValueFactor());
+        }
+        else
+        {
+            break;
+        }
+    }
+    return value;
+}
+
+MathValue MathEvaluator::ParseValueFactor()
+{
+    MathValue value = ParseValuePower();
+    SkipSpace();
+    if (pos < expr.size() && expr[pos] == L'^')
+    {
+        ++pos;
+        value = PowerValue(value, ParseValueFactor());
+    }
+    return value;
+}
+
+MathValue MathEvaluator::ParseValuePower()
+{
+    SkipSpace();
+    if (pos >= expr.size())
+        return MathValue::Error(L"invalid expression");
+
+    if (expr[pos] == L'(' || expr[pos] == L'{')
+    {
+        const wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+        ++pos;
+        MathValue value = ParseValueExpression();
+        SkipSpace();
+        if (pos >= expr.size() || expr[pos] != close)
+            return MathValue::Error(L"invalid expression");
+        ++pos;
+        return value;
+    }
+
+    if (expr[pos] == L'-')
+    {
+        ++pos;
+        MathValue value = ParseValuePower();
+        if (!value.IsError())
+            value.baseValue = -value.baseValue;
+        return value;
+    }
+
+    if (iswdigit(expr[pos]) || expr[pos] == L'.')
+    {
+        wchar_t* end = nullptr;
+        const double value = wcstod(&expr[pos], &end);
+        pos = (size_t)(end - expr.c_str());
+        return MathValue::Scalar(value);
+    }
+
+    if (iswalpha(expr[pos]))
+    {
+        std::wstring name;
+        while (pos < expr.size() && (iswalpha(expr[pos]) || iswdigit(expr[pos])))
+            name += expr[pos++];
+
+        if (!varName.empty() && name == varName)
+            return varValue_q;
+        if (name == L"pi")
+            return MathValue::Scalar(kPiValue);
+        if (name == L"e")
+            return MathValue::Scalar(kEValue);
+
+        if (name == L"log" || name == L"ln")
+        {
+            MathValue baseValue = MathValue::Scalar(name == L"ln" ? kEValue : 10.0);
+            SkipSpace();
+            if (name == L"log" && pos < expr.size() && expr[pos] == L'_')
+            {
+                ++pos;
+                SkipSpace();
+                baseValue = ParseValuePower();
+                if (baseValue.IsError())
+                    return baseValue;
+                SkipSpace();
+            }
+
+            if (pos >= expr.size() || (expr[pos] != L'(' && expr[pos] != L'{'))
+                return MathValue::Error(L"invalid log argument");
+
+            const wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+            ++pos;
+            MathValue argument = ParseValueExpression();
+            SkipSpace();
+            if (pos >= expr.size() || expr[pos] != close)
+                return MathValue::Error(L"invalid log argument");
+            ++pos;
+
+            if (baseValue.IsError()) return baseValue;
+            if (argument.IsError()) return argument;
+            if (!baseValue.IsDimensionless() || !std::isfinite(baseValue.baseValue) || baseValue.baseValue <= 0 || NearlyEqual(baseValue.baseValue, 1.0))
+                return MathValue::Error(L"invalid log base");
+            if (!argument.IsDimensionless())
+                return MathValue::Error(L"log requires abstract number");
+            if (!std::isfinite(argument.baseValue) || argument.baseValue <= 0)
+                return MathValue::Error(L"invalid log argument");
+
+            return MathValue::Scalar(std::log(argument.baseValue) / std::log(baseValue.baseValue));
+        }
+
+        SkipSpace();
+        if (pos < expr.size() && (expr[pos] == L'(' || expr[pos] == L'{'))
+        {
+            const wchar_t close = (expr[pos] == L'(') ? L')' : L'}';
+            ++pos;
+            MathValue argument = ParseValueExpression();
+            SkipSpace();
+            if (pos >= expr.size() || expr[pos] != close)
+                return MathValue::Error(L"invalid expression");
+            ++pos;
+            return ApplyUnaryValueFunction(name, argument);
+        }
+
+        if (const UnitDefinition* definition = FindUnitDefinition(name))
+            return MathValue::Quantity(definition->scale, definition->dimension, definition->scale, definition->symbol);
+
+        return MathValue::Error(L"unknown symbol");
+    }
+
+    return MathValue::Error(L"invalid expression");
 }
 
 Rational MathEvaluator::EvalRational(const std::wstring& e, const std::wstring& vName, const Rational& vVal)
